@@ -1,0 +1,49 @@
+# FastAPI & Web
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+streamlit==1.28.0
+python-multipart==0.0.6
+python-dotenv==1.0.0
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Database
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.12.1
+
+# Pydantic
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# AI/ML - CPU Optimized (Windows compatible)
+sentence-transformers==2.2.2
+chromadb==0.4.15
+transformers==4.36.0
+torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+accelerate==0.24.1
+bitsandbytes==0.41.1
+
+# Document Processing
+pytesseract==0.3.10
+pdf2image==1.16.3
+pypdf2==3.0.1
+python-docx==0.8.11
+openpyxl==3.1.2
+pillow==10.1.0
+python-magic==0.4.27
+openai-whisper==20231117
+
+# Utilities
+numpy==1.24.3
+pandas==2.1.4
+python-dotenv==1.0.0
+requests==2.31.0
+tqdm==4.66.1
+
+# Development
+pytest==7.4.3
+black==23.11.0

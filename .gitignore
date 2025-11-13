@@ -1,0 +1,121 @@
+# ---------------------------
+# Python
+# ---------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.egg
+.env
+*.log
+
+# ---------------------------
+# Virtual environments
+# ---------------------------
+venv/
+.venv/
+ENV/
+env/
+
+# ---------------------------
+# IDE / Editor
+# ---------------------------
+.vscode/
+.idea/
+*.swp
+
+# ---------------------------
+# OS Generated Files
+# ---------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------
+# FastAPI / Uvicorn
+# ---------------------------
+*.db
+*.sqlite3
+
+# ---------------------------
+# Model / Embedding Storage
+# (These files are huge — DO NOT commit)
+# ---------------------------
+models/
+data/embeddings/
+data/embeddings/chroma_db/
+data/chroma/
+chroma/
+chroma_db/
+
+# If your OCR pipeline generates intermediate images:
+data/ocr_temp/
+*.ppm
+*.jpeg
+*.jpg
+*.png
+
+# ---------------------------
+# Uploaded documents
+# ---------------------------
+data/documents/
+uploads/
+user_uploads/
+
+# ---------------------------
+# Cache directories
+# ---------------------------
+.cache/
+.cache_dir/
+tmp/
+temp/
+*.tmp
+
+# HuggingFace transformers cache
+~/.cache/huggingface/
+huggingface/
+hf_cache/
+transformers_cache/
+torch_cache/
+sentence_transformers_cache/
+
+# ---------------------------
+# Jupyter
+# ---------------------------
+.ipynb_checkpoints/
+
+# ---------------------------
+# PDF/Image processing
+# ---------------------------
+*.pdf
+*.tiff
+*.tif
+
+# ---------------------------
+# Build tools / CMake
+# ---------------------------
+build/
+cmake-build-*/
+*.exe
+*.dll
+
+# ---------------------------
+# Logs
+# ---------------------------
+logs/
+*.log
+
+# ---------------------------
+# Optional - environment backups
+# ---------------------------
+*.bak
+*.backup
+
+# ---------------------------
+# Ignore runtime data outputs
+# ---------------------------
+runtime/
+outputs/
+generated/
