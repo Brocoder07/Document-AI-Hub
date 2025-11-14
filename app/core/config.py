@@ -17,8 +17,10 @@ class Settings(BaseSettings):
 
     # AI Models
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    TEXT_GEN_MODEL: str = "distilgpt2"           # lightweight CPU-safe generator
-    MAX_NEW_TOKENS: int = 150
+    
+    # --- Updated for Groq ---
+    GROQ_API_KEY: str = "your_groq_api_key_here" # Load from .env
+    GROQ_MODEL_NAME: str = "llama3-8b-8192"      # Or mixtral-8x7b-32768
 
     # ChromaDB
     CHROMA_PERSIST_DIR: str = "data/embeddings/chroma_db"
