@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import Field
 import os
 
 class Settings(BaseSettings):
@@ -7,20 +8,20 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
 
-    # Database - PostgreSQL
-    DATABASE_URL: str = "postgresql://ai_user:password@localhost/document_ai_hub"
+    # Database - PostgreSQL (now from .env)
+    DATABASE_URL: str = Field(..., env="DATABASE_URL")
 
-    # Security
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    # Security (now from .env)
+    SECRET_KEY: str = Field(..., env="SECRET_KEY")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # AI Models
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     
-    # --- Updated for Groq ---
-    GROQ_API_KEY: str = "your_groq_api_key_here" # Load from .env
-    GROQ_MODEL_NAME: str = "llama3-8b-8192"      # Or mixtral-8x7b-32768
+    # Groq Configuration (now from .env)
+    GROQ_API_KEY: str = Field(..., env="GROQ_API_KEY")
+    GROQ_MODEL: str = Field(default="llama3-8b-8192", env="GROQ_MODEL")
 
     # ChromaDB
     CHROMA_PERSIST_DIR: str = "data/embeddings/chroma_db"

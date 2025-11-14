@@ -20,6 +20,8 @@ def create_user(db: Session, user_data: dict) -> User:
     Creates a new user in the database.
     'user_data' should be a dict with 'username', 'email', 'full_name', 'password'.
     """
+    if len(user_data["password"].encode('utf-8')) > 72:
+        raise ValueError("Password exceeds maximum length of 72 bytes.")
     hashed_password = get_password_hash(user_data["password"])
     
     db_user = User(
