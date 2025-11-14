@@ -9,7 +9,7 @@ router = APIRouter()
 
 class RagQueryRequest(BaseModel):
     query: str
-    file_id: str | None = None # User can optionally scope query to one file
+    filename: str | None = None # User can optionally scope query to one file
 
 class RetrievedDoc(BaseModel):
     id: str
@@ -27,17 +27,13 @@ async def get_rag_answer(
     request: RagQueryRequest,
     current_user: UserInDB = Depends(get_current_active_user)
 ):
-    """
-    Generates an Al-powered answer from documents (RAG).
-    Filters by the authenticated user and optionally by file_id.
-    """
     try:
-        user_id = current_user.email # Get user ID for data scoping
+        user_id = current_user.email
         
         result = await answer_query(
             query=request.query,
             user_id=user_id,
-            file_id=request.file_id
+            filename=request.filename  # Updated parameter
         )
         return RagResponse(**result)
         
