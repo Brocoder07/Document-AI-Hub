@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from app.api.dependencies import get_current_active_user, UserInDB
-# --- THIS IS THE FIX ---
-from app.services.rag_service import retrieve_docs  # (Was 'retrieve')
+# FIX: Import the new function
+from app.services.rag_service import retrieve_with_scores 
 
 router = APIRouter()
 
@@ -12,10 +12,12 @@ class SearchQueryRequest(BaseModel):
     query: str
     file_id: str | None = None
     top_k: int = Field(default=3, gt=0, le=10)
+    # Optional: Allow mode selection in search too, defaulting to general
+    mode: str = "general" 
 
 class RetrievedDoc(BaseModel):
-    # This is simplified based on the new rag_service output
     text: str
+    score: float # <--- Added score field
 
 class SearchResponse(BaseModel):
     results: list[RetrievedDoc]
@@ -29,23 +31,30 @@ def search_similar_documents(
 ):
     """
     Performs a vector similarity search on the user's documents.
+    Returns text segments with their similarity scores (0 to 1).
     """
     try:
         user_id = current_user.email
         
-        # Get the list of rich dictionaries
-        results_list = retrieve_docs(
+        # FIX: Call the new function
+        # retrieve_with_scores returns: (results, retrieval_time, scores)
+        results_list, _, _ = retrieve_with_scores(
             query=request.query,
             user_id=user_id,
             file_id=request.file_id,
+            mode=request.mode,
             top_k=request.top_k
         )
         
-        # FIX: Extract just the 'text' field because SearchResponse 
-        # currently only expects text.
-        results = [{"text": doc["text"]} for doc in results_list]
+        # Format for the pydantic response
+        # The results_list already contains dicts with 'text' and 'score' keys
+        # from our update in rag_service.py
+        formatted_results = [
+            RetrievedDoc(text=doc["text"], score=doc["score"]) 
+            for doc in results_list
+        ]
         
-        return SearchResponse(results=results)
+        return SearchResponse(results=formatted_results)
         
     except Exception as e:
         raise HTTPException(

@@ -1,52 +1,42 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_active_user, UserInDB
-# REMOVE: from app.core.config import settings
+from app.services.transcription_service import transcribe_audio
+from app.services.document_service import get_document_by_file_id
+from app.db.session import get_db
 import os
-import app.services.transcription_service as transcription_service
 
 router = APIRouter()
 
-# --- Pydantic Schemas ---
 class TranscriptionRequest(BaseModel):
-    file_id: str 
+    file_id: str # Expects UUID
 
 class TranscriptionResponse(BaseModel):
     file_id: str
     transcription: str
 
-# --- Endpoints ---
-
 @router.post("/audio", response_model=TranscriptionResponse)
 async def transcribe_audio_file(
     request: TranscriptionRequest,
-    current_user: UserInDB = Depends(get_current_active_user)
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
 ):
-    """
-    Transcribes an *already uploaded* audio file.
-    """
+    # 1. Lookup Document
+    doc = get_document_by_file_id(db, request.file_id)
     
-    # FIX: Construct the correct user-specific path
-    user_dir = os.path.join("data", "users", current_user.email, "documents")
-    file_path = os.path.join(user_dir, request.file_id)
-    
-    if not os.path.exists(file_path):
-         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File not found at {file_path}. Ensure you used the correct file_id."
-        )
+    if not doc:
+        raise HTTPException(status_code=404, detail="File ID not found.")
+    if doc.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized.")
+        
+    if not os.path.exists(doc.file_path):
+         raise HTTPException(status_code=404, detail="File missing from disk.")
 
     try:
-        # Call the transcription service
-        transcription_text = transcription_service.transcribe_audio(file_path)
-        
-        return TranscriptionResponse(
-            file_id=request.file_id,
-            transcription=transcription_text
-        )
+        # 2. Process
+        transcription_text = transcribe_audio(doc.file_path)
+        return TranscriptionResponse(file_id=request.file_id, transcription=transcription_text)
         
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to transcribe audio: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Transcription Failed: {str(e)}")

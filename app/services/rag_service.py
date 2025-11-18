@@ -1,100 +1,125 @@
 from app.api.chroma_client import get_collection
 from app.services.embedding_service import embed_texts
 from app.core.llm import get_llm
+from app.generation.citation_enforcer import validate_citations
+from app.metrics.confidence_calculator import calculate_confidence
 
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
+from langchain.prompts import ChatPromptTemplate, PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough, RunnableParallel
+import time
+import logging
 
-# --- 1. Define Specialized Prompts with Safety Clauses ---
+logger = logging.getLogger(__name__)
 
+# --- 1. STRICT PROMPTS with CITATION EXAMPLES ---
 PROMPT_TEMPLATES = {
-    "general": """
-    [INST] You are a helpful assistant. Use the following context to answer the question.
-    If the answer is not present in the context, say "I could not find the answer in the provided documents."
-    
-    CONTEXT:
-    {context}
-    
-    QUESTION:
-    {query} [/INST]
-    """,
+    "general": """You are a helpful assistant. Answer the user's question thoroughly using ONLY the provided documents.
 
-    "legal": """
-    [INST] You are a legal AI assistant. Your task is to analyze contracts and legal documents.
-    - Extract specific legal clauses, terms, and obligations.
-    - Highlight potential risks or binding terms.
-    - Cite the specific section or wording from the context verbatim where possible.
-    - If the answer is not found in the context, state "I could not find the answer in the provided documents."
-    
-    CONTEXT:
-    {context}
-    
-    LEGAL QUERY:
-    {query} [/INST]
-    """,
+REQUIREMENTS:
+- Base your answer ONLY on the provided context.
+- Cite sources using [DOC doc_id] for EVERY factual claim.
+- Example: "Apache Spark is a distributed framework [DOC doc_id_1] that processes data in memory [DOC doc_id_2]."
+- If information is missing, say: "I could not find the answer in the provided documents."
 
-    "finance": """
-    [INST] You are a financial analyst AI. Your task is to interpret financial documents, bank policies, and credit terms.
-    - Focus on numerical accuracy, interest rates, repayment terms, and fees.
-    - Explain complex financial jargon in simple terms.
-    - If the answer is not found in the context, state "I could not find the answer in the provided documents."
-    
-    CONTEXT:
-    {context}
-    
-    FINANCE QUERY:
-    {query} [/INST]
-    """,
+CONTEXT:
+{context}
 
-    "academic": """
-    [INST] You are an academic research assistant. Your task is to summarize research papers and generate insights.
-    - Focus on the methodology, key findings, and conclusions.
-    - Generate citations or references to specific authors/sections mentioned in the text.
-    - If the answer is not found in the context, state "I could not find the answer in the provided documents."
-    
-    CONTEXT:
-    {context}
-    
-    ACADEMIC QUERY:
-    {query} [/INST]
-    """,
+QUESTION: {query}
 
-    "healthcare": """
-    [INST] You are a medical information assistant. Your task is to extract patient history and treatment details from reports.
-    - IMPORTANT: Do not provide medical advice or diagnosis. Only summarize what is explicitly stated in the text.
-    - If the answer is not found in the context, state "I could not find the answer in the provided documents."
+ANSWER:""",
     
-    CONTEXT:
-    {context}
-    
-    HEALTHCARE QUERY:
-    {query} [/INST]
-    """,
+    "legal": """You are a legal analysis expert. Analyze the provided legal documents to answer the user's question.
 
-    "business": """
-    [INST] You are a business executive assistant. Your task is to analyze meeting transcripts and business documents.
-    - Extract key action items, decisions made, and deadlines.
-    - Identify who is responsible for which task (owners).
-    - If the answer is not found in the context, state "I could not find the answer in the provided documents."
+REQUIREMENTS:
+- Extract and explain legal clauses, terms, and obligations exactly as stated.
+- Cite [DOC doc_id] for every legal point. Example: "Section 3 requires [DOC doc_id] that..."
+- Highlight potential risks ONLY if explicitly mentioned in the documents.
+- If asked about something not in the documents, say: "I could not find the answer in the provided documents."
+- Use clear structure: Key Terms, Obligations, Risks, etc.
+
+CONTEXT:
+{context}
+
+LEGAL QUESTION: {query}
+
+ANALYSIS:""",
     
-    CONTEXT:
-    {context}
+    "finance": """You are a financial analyst. Interpret financial documents to answer the user's question.
+
+REQUIREMENTS:
+- Report financial figures, rates, and terms exactly as stated in documents.
+- Cite [DOC doc_id] for every number or metric. Example: "The interest rate is 5.2% [DOC doc_id] and..."
+- Provide context for each figure (what it represents, when it applies).
+- If data is missing, say: "I could not find the answer in the provided documents."
+- Organize by: Overview, Key Figures, Terms & Conditions, etc.
+
+CONTEXT:
+{context}
+
+FINANCIAL QUESTION: {query}
+
+ANALYSIS:""",
     
-    BUSINESS QUERY:
-    {query} [/INST]
-    """
+    "academic": """You are a rigorous academic researcher. Explain concepts STRICTLY from the provided scholarly materials.
+
+CRITICAL INSTRUCTIONS:
+- Use ONLY information from the provided documents. Do not use outside knowledge.
+- For EVERY factual claim, cite the source document using ONLY these doc IDs: {', '.join(doc_ids)}
+- Citation format MUST be: [DOC <exact_doc_id>] (e.g., {examples})
+- Use exact terminology from the documents (e.g., "vector" not "array" unless documents use "array").
+- If a concept is not in the documents, say: "I could not find the answer in the provided documents."
+- Structure your answer: Definition, Key Components, Architecture, Examples, Applications.
+- IMPORTANT: Only cite doc IDs that appear above. Do NOT invent new doc IDs like doc_id_1, doc_id_2, etc.
+
+CONTEXT:
+{context}
+
+ACADEMIC QUESTION: {query}
+
+EXPLANATION:""",
+    
+    "healthcare": """You are a medical information specialist. Extract and summarize patient or medical information from documents.
+
+REQUIREMENTS:
+- Summarize ONLY what is explicitly stated in the medical records.
+- Cite [DOC doc_id] for every fact. Example: "Patient was diagnosed with [DOC doc_id] and treated with [DOC doc_id]."
+- Do NOT provide medical advice, diagnosis, or interpretation.
+- Present information chronologically if applicable.
+- If information is missing, say: "I could not find the answer in the provided documents."
+- Use structure: Patient History, Treatments, Results, Notes.
+
+CONTEXT:
+{context}
+
+HEALTHCARE QUESTION: {query}
+
+SUMMARY:""",
+    
+    "business": """You are a business operations analyst. Analyze meeting minutes and business documents to answer the user's question.
+
+REQUIREMENTS:
+- Extract action items, decisions, and deadlines exactly as documented.
+- Cite [DOC doc_id] for each fact. Example: "John will complete the report [DOC doc_id] by Friday [DOC doc_id]."
+- Identify who is responsible for each task.
+- If information is incomplete, say: "I could not find the answer in the provided documents."
+- Organize by: Decisions Made, Action Items (with owners/deadlines), Next Steps.
+
+CONTEXT:
+{context}
+
+BUSINESS QUESTION: {query}
+
+REPORT:"""
 }
 
-# --- 2. Retrieval Logic ---
+# --- 2. Retrieval Logic with Scoring ---
 
-def retrieve_docs(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 4):
+def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
     """
-    Retrieves documents from the specific collection associated with the selected Mode.
+    Retrieves documents AND their similarity scores.
     """
+    start_time = time.time()
     
-    # --- MULTI-TENANCY: Map Mode to Collection ---
-    # This ensures 'Legal Mode' only searches 'legal_docs'
     collection_map = {
         "legal": "legal_docs",
         "healthcare": "medical_docs",
@@ -103,24 +128,14 @@ def retrieve_docs(query: str, user_id: str, file_id: str | None = None, mode: st
         "business": "general_docs",
         "general": "general_docs" 
     }
-    
     target_collection = collection_map.get(mode, "general_docs")
-    
-    # Connect to that specific DB
     col = get_collection(target_collection)
     
     q_emb = embed_texts([query])[0]
 
-    # Filter Logic
     base_filter = {"user_id": user_id}
-    
     if file_id:
-        where_filter = {
-            "$and": [
-                base_filter,
-                {"file_id": file_id}
-            ]
-        }
+        where_filter = {"$and": [base_filter, {"file_id": file_id}]}
     else:
         where_filter = base_filter
 
@@ -128,59 +143,364 @@ def retrieve_docs(query: str, user_id: str, file_id: str | None = None, mode: st
         query_embeddings=[q_emb], 
         n_results=top_k,
         where=where_filter,
-        # We remove "ids" from include because Chroma returns them by default
-        include=["documents", "metadatas"] 
+        include=["documents", "metadatas", "distances"] 
     )
     
+    retrieval_time = time.time() - start_time
     results = []
+    
+    scores = []
+
     if res["documents"]:
         for i in range(len(res["documents"][0])):
+            dist = res["distances"][0][i]
+            sim_score = max(0, 1.0 - dist) 
+            scores.append(sim_score)
+            
             results.append({
                 "id": res["ids"][0][i],
                 "text": res["documents"][0][i],
-                "meta": res["metadatas"][0][i]
+                "meta": res["metadatas"][0][i],
+                "score": round(sim_score, 4)
             })
             
-    return results
+    return results, retrieval_time, scores
 
 def format_docs(docs: list[dict]) -> str:
-    """Helper function to format retrieved docs into a string for the LLM."""
     return "\n\n---\n\n".join([d["text"] for d in docs])
 
-# --- 3. Main RAG Pipeline ---
+# --- 3. STRICT Citation Validation (with enhanced logging) ---
+
+def validate_answer_citations(answer: str, retrieved_docs: list[dict], mode: str = "general") -> tuple[bool, dict]:
+	"""
+	Validates that answers are properly cited.
+	Different modes have different strictness levels.
+	Returns: (is_valid, validation_details)
+	"""
+	citation_val = validate_citations(answer, retrieved_docs)
+	
+	logger.debug(f"Citation validation - Mode: {mode}")
+	logger.debug(f"  Total citations found: {citation_val.get('total_citations', 0)}")
+	logger.debug(f"  Valid citations: {citation_val.get('valid_citations', 0)}")
+	logger.debug(f"  Coverage: {citation_val.get('coverage', 0):.2%}")
+	logger.debug(f"  Invalid citation IDs: {citation_val.get('invalid_citations', [])}")
+	
+	# Check if answer contains the refusal message
+	refusal_phrases = [
+		"I could not find the answer",
+		"I cannot find",
+		"information is not available",
+		"not found in the provided documents"
+	]
+	
+	is_refusal = any(phrase.lower() in answer.lower() for phrase in refusal_phrases)
+	
+	# If it's a refusal, it's valid (no citations needed)
+	if is_refusal:
+		logger.info("Answer is a refusal - marking as valid")
+		return True, citation_val
+	
+	# If it's a substantive answer, check citations
+	total_cites = citation_val.get("total_citations", 0)
+	
+	# Academic mode: STRICT - require at least 1 citation, then check coverage
+	if mode == "academic":
+		if total_cites == 0:
+			logger.warning("Academic mode: NO citations found in answer - INVALID")
+			return False, citation_val
+		
+		coverage = citation_val.get("coverage", 0)
+		if coverage < 0.75:
+			logger.warning(f"Academic mode: Citation coverage {coverage:.2%} < 0.75 - INVALID")
+			return False, citation_val
+		
+		logger.info(f"Academic mode: Valid answer with {total_cites} citations, coverage {coverage:.2%}")
+		return True, citation_val
+	
+	# Other modes: LENIENT - accept if LLM attempted citations
+	else:
+		if total_cites == 0:
+			logger.warning(f"{mode} mode: NO citations found in answer - INVALID")
+			return False, citation_val
+		
+		coverage = citation_val.get("coverage", 0)
+		valid_cites = citation_val.get("valid_citations", 0)
+		
+		# LENIENT: If LLM generated citations AND at least 1 is valid, accept
+		if valid_cites >= 1:
+			logger.info(f"{mode} mode: Valid answer with {valid_cites}/{total_cites} valid citations (coverage {coverage:.2%})")
+			return True, citation_val
+		
+		# Stricter: If ALL citations are invalid, reject
+		if total_cites > 0 and coverage == 0:
+			logger.warning(f"{mode} mode: LLM generated {total_cites} citations but ALL are invalid - INVALID")
+			return False, citation_val
+		
+		logger.info(f"{mode} mode: Valid answer with {total_cites} citations, coverage {coverage:.2%}")
+		return True, citation_val
+
+# --- 4. Main RAG Pipeline (STRICT MODE with BETTER UX) ---
 
 async def answer_query(query: str, user_id: str, file_id: str | None = None, mode: str = "general"):
     """
-    The main LangChain RAG pipeline.
+    STRICT RAG pipeline: evidence-only, citation-enforced, validation-checked.
+    Prompts are dynamically built with actual doc IDs for citation examples.
+    Returns Answer + Rich Metrics.
     """
-    
+    total_start_time = time.time()
     llm = get_llm()
     
-    # Select the appropriate template based on the mode
-    template = PROMPT_TEMPLATES.get(mode, PROMPT_TEMPLATES["general"])
-    rag_prompt = ChatPromptTemplate.from_template(template)
+    # 1. Retrieval Step
+    retrieved_docs, retrieval_time, scores = retrieve_with_scores(query, user_id, file_id, mode, top_k=6)
+    context_str = format_docs(retrieved_docs)
     
-    def retriever(query_str: str):
-        # Pass 'mode' to retriever to select the correct collection
-        docs = retrieve_docs(query_str, user_id, file_id, mode)
-        return format_docs(docs)
-
-    chain = (
-        RunnableParallel(
-            context=(RunnablePassthrough() | retriever), 
-            query=RunnablePassthrough()
-        )
-        | rag_prompt
-        | llm
-        | StrOutputParser()
-    )
-
-    answer = await chain.ainvoke(query)
+    avg_similarity = sum(scores) / len(scores) if scores else 0.0
     
-    # Fetch docs again to return them in the API response
-    retrieved_for_response = retrieve_docs(query, user_id, file_id, mode)
+    logger.info(f"RAG Query - Mode: {mode}, Retrieved: {len(retrieved_docs)} docs, Avg similarity: {avg_similarity:.3f}")
+    
+    # 2. Mode Policy Check (Require documents)
+    if not retrieved_docs:
+        logger.info("No documents retrieved - returning refusal")
+        return {
+            "answer": "I could not find the answer in the provided documents.",
+            "retrieved": [],
+            "metrics": {
+                "processing_time_total": round(time.time() - total_start_time, 3),
+                "retrieval_time": round(retrieval_time, 3),
+                "generation_time": 0,
+                "token_usage": {"input": 0, "output": 0, "total": 0},
+                "similarity_score": 0,
+                "confidence_category": "Low",
+                "confidence_score": 0,
+                "hallucination_risk": "Potential"
+            }
+        }
+
+    # 3. Generation Step - Build Dynamic Prompt with Actual Doc IDs
+    template = _build_dynamic_prompt(mode, retrieved_docs)
+    rag_prompt = PromptTemplate.from_template(template)
+    
+    chain = rag_prompt | llm
+    
+    gen_start_time = time.time()
+    ai_message = await chain.ainvoke({"context": context_str, "query": query})
+    gen_time = time.time() - gen_start_time
+    
+    # 4. Extract answer and metrics
+    answer_text = ai_message.content
+    meta = ai_message.response_metadata
+    token_usage = meta.get("token_usage", {})
+    
+    input_tokens = token_usage.get("prompt_tokens", 0)
+    output_tokens = token_usage.get("completion_tokens", 0)
+    total_tokens = token_usage.get("total_tokens", 0)
+    
+    logger.debug(f"LLM generated {output_tokens} tokens. Answer preview: {answer_text[:100]}...")
+    
+    # 5. STRICT VALIDATION: Check citations (with mode-aware logic)
+    is_valid, citation_val = validate_answer_citations(answer_text, retrieved_docs, mode)
+    
+    if not is_valid:
+        logger.warning(f"Answer validation FAILED for {mode} mode. Total citations: {citation_val.get('total_citations', 0)}, Coverage: {citation_val.get('coverage', 0)}")
+        logger.warning(f"Rejected answer preview: {answer_text[:150]}...")
+        
+        answer_text = "I could not find the answer in the provided documents."
+        citation_val["coverage"] = 0.0
+    
+    # 6. Calculate improved confidence using multi-factor heuristic
+    conf = calculate_confidence(query, retrieved_docs, answer_text, citation_val)
+    
+    total_time = time.time() - total_start_time
+
+    # 7. Metrics Object
+    metrics = {
+        "processing_time_total": round(total_time, 3),
+        "retrieval_time": round(retrieval_time, 3),
+        "generation_time": round(gen_time, 3),
+        "token_usage": {
+            "input": input_tokens,
+            "output": output_tokens,
+            "total": total_tokens
+        },
+        "similarity_score": round(avg_similarity, 3),
+        "confidence_category": conf["confidence_category"],
+        "confidence_score": conf["confidence_score"],
+        "hallucination_risk": "Low" if citation_val.get("coverage", 0) > 0.7 else "Potential",
+        "citation_validation": {
+            "total_citations": citation_val.get("total_citations", 0),
+            "valid_citations": citation_val.get("valid_citations", 0),
+            "coverage": round(citation_val.get("coverage", 0), 2)
+        }
+    }
     
     return {
-        "answer": answer, 
-        "retrieved": retrieved_for_response
+        "answer": answer_text, 
+        "retrieved": retrieved_docs,
+        "metrics": metrics
     }
+
+# --- Dynamic Prompt Builder ---
+
+def _build_dynamic_prompt(mode: str, retrieved_docs: list[dict]) -> str:
+    """
+    Builds mode-specific prompt with ACTUAL doc IDs from retrieved documents.
+    CRITICAL: Uses EXTREME specificity to prevent LLM from hallucinating doc IDs.
+    """
+    
+    # Extract ALL actual doc IDs
+    doc_ids = [doc["id"] for doc in retrieved_docs]
+    doc_ids_str = ", ".join(doc_ids)
+    
+    if mode == "academic":
+        return f"""You are a rigorous academic researcher. Explain concepts STRICTLY from the provided scholarly materials.
+
+⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
+YOU MUST FOLLOW THIS OR YOUR RESPONSE WILL BE REJECTED:
+
+ALLOWED DOC IDS (ONLY these IDs exist in the provided documents):
+{doc_ids_str}
+
+RULES:
+1. Use ONLY information from the provided documents.
+2. For EVERY factual claim, cite EXACTLY ONE of the allowed doc IDs above.
+3. Citation format: [DOC 7a0e43c6-4e1d-44c2-9fed-447bf1981204_XX] where XX is from the ALLOWED list.
+4. Example CORRECT citation: [DOC {doc_ids[0]}]
+5. If you cite an ID not in the ALLOWED list, your answer will be REJECTED.
+6. Use exact terminology from documents (e.g., "vector" not "array").
+7. If concept not in documents, say: "I could not find the answer in the provided documents."
+8. Structure: Definition, Key Components, Architecture, Examples, Applications.
+
+REMEMBER: Only cite IDs from this list:
+{doc_ids_str}
+
+CONTEXT:
+{{context}}
+
+ACADEMIC QUESTION: {{query}}
+
+EXPLANATION:"""
+    
+    elif mode == "legal":
+        return f"""You are a legal analysis expert. Analyze the provided legal documents STRICTLY.
+
+⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
+
+ALLOWED DOC IDS (ONLY):
+{doc_ids_str}
+
+RULES:
+1. Extract legal clauses EXACTLY as stated.
+2. Cite [DOC allowed_id_from_above] for EVERY legal point.
+3. ONLY cite IDs from the allowed list above.
+4. If you cite an ID not in the list, your answer WILL BE REJECTED.
+5. Highlight risks ONLY if explicitly in documents.
+6. If not in documents, say: "I could not find the answer in the provided documents."
+
+CONTEXT:
+{{context}}
+
+LEGAL QUESTION: {{query}}
+
+ANALYSIS:"""
+    
+    elif mode == "finance":
+        return f"""You are a financial analyst. Interpret financial documents STRICTLY.
+
+⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
+
+ALLOWED DOC IDS (ONLY):
+{doc_ids_str}
+
+RULES:
+1. Report financial figures EXACTLY as stated.
+2. Cite [DOC allowed_id] for EVERY number or metric.
+3. ONLY cite IDs from the list above.
+4. Do NOT invent doc IDs.
+5. Provide context for each figure.
+6. If missing, say: "I could not find the answer in the provided documents."
+
+CONTEXT:
+{{context}}
+
+FINANCIAL QUESTION: {{query}}
+
+ANALYSIS:"""
+    
+    elif mode == "healthcare":
+        return f"""You are a medical information specialist. Extract patient information STRICTLY.
+
+⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
+
+ALLOWED DOC IDS (ONLY):
+{doc_ids_str}
+
+RULES:
+1. Summarize ONLY what is explicitly stated.
+2. Cite [DOC allowed_id] for EVERY fact.
+3. ONLY cite IDs from the list above.
+4. Do NOT cite IDs outside this list.
+5. No medical advice or diagnosis.
+6. If missing, say: "I could not find the answer in the provided documents."
+
+CONTEXT:
+{{context}}
+
+HEALTHCARE QUESTION: {{query}}
+
+SUMMARY:"""
+    
+    elif mode == "business":
+        return f"""You are a business operations analyst. Analyze business documents STRICTLY.
+
+⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
+
+ALLOWED DOC IDS (ONLY):
+{doc_ids_str}
+
+RULES:
+1. Extract action items, decisions, deadlines as documented.
+2. Cite [DOC allowed_id] for EACH fact.
+3. ONLY cite IDs from the list above.
+4. Identify responsible owners.
+5. If incomplete, say: "I could not find the answer in the provided documents."
+
+CONTEXT:
+{{context}}
+
+BUSINESS QUESTION: {{query}}
+
+REPORT:"""
+    
+    else:  # general mode - NOW WITH STRICT FORMAT
+        return f"""You are a helpful assistant. Answer using ONLY the provided documents.
+
+⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
+YOU MUST FOLLOW THIS OR YOUR RESPONSE WILL BE REJECTED:
+
+ALLOWED DOC IDS (ONLY these IDs exist in the provided documents):
+{doc_ids_str}
+
+RULES:
+1. Base answer ONLY on provided context.
+2. Cite [DOC allowed_id] for EVERY factual claim.
+3. Citation format: [DOC {doc_ids[0]}] (exact format shown here).
+4. ONLY cite IDs from the list above.
+5. Example CORRECT citation: "The laptop is a Dell XPS13 [DOC {doc_ids[0]}]"
+6. Example WRONG citation: "[{doc_ids[0]}]" or "({doc_ids[0]})" - DO NOT DO THIS
+7. If you cite any ID not in the ALLOWED list, your answer will be REJECTED.
+8. If information is missing, say: "I could not find the answer in the provided documents."
+
+REMEMBER: Only cite IDs from this list:
+{doc_ids_str}
+
+CONTEXT:
+{{context}}
+
+QUESTION: {{query}}
+
+ANSWER:"""
+
+# --- Backward Compatibility Wrapper ---
+def retrieve_docs(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
+    docs, _, _ = retrieve_with_scores(query, user_id, file_id, mode, top_k)
+    return docs

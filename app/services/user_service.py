@@ -12,10 +12,10 @@ def get_user_by_username(db: Session, username: str) -> User | None:
 def get_user_by_id(db: Session, user_id: int) -> User | None:
     return db.query(User).filter(User.id == user_id).first()
 
-def create_user(db: Session, user_data: dict, allow_admin_role: bool = False) -> User:
+def create_user(db: Session, user_data: dict) -> User:
     """
     Creates a new user.
-    Strictly enforces role validation and prevents unauthorized admin creation.
+    Strictly enforces role validation.
     """
     if len(user_data["password"].encode('utf-8')) > 72:
         raise ValueError("Password exceeds maximum length of 72 bytes.")
@@ -27,12 +27,8 @@ def create_user(db: Session, user_data: dict, allow_admin_role: bool = False) ->
     if not requested_role:
         raise ValueError("Role is required. You must specify if you are a student, lawyer, doctor, etc.")
     
-    # 2. Security Check: Block unauthorized Admin creation
-    if requested_role == "admin" and not allow_admin_role:
-        raise ValueError("You cannot create admin account, this function is only entitled to roles with 'admin' tag.")
-        
-    # 3. Validate Role Whitelist
-    valid_roles = ["student", "researcher", "lawyer", "doctor", "banker", "employee", "admin"]
+    # 2. Validate Role Whitelist (REMOVED "admin" from this list)
+    valid_roles = ["student", "researcher", "lawyer", "doctor", "banker", "employee"]
     
     if requested_role not in valid_roles:
         raise ValueError(f"Invalid role '{requested_role}'. Allowed roles: {', '.join(valid_roles)}")
@@ -80,10 +76,3 @@ def soft_delete_user(db: Session, db_user: User) -> User:
     db.commit()
     db.refresh(db_user)
     return db_user
-
-# --- NEW FUNCTION ---
-def get_all_users(db: Session, skip: int = 0, limit: int = 100) -> list[User]:
-    """
-    Retrieve all users, including inactive (soft-deleted) ones.
-    """
-    return db.query(User).offset(skip).limit(limit).all()

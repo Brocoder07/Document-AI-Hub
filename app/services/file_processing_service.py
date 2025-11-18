@@ -5,7 +5,6 @@ from app.api.chroma_client import get_collection
 from app.services.ocr_service import extract_text_from_pdf, extract_text_from_image
 from app.services.transcription_service import transcribe_audio
 import logging
-import mimetypes
 from PIL import Image
 import os
 
@@ -27,27 +26,26 @@ def get_file_type(filename: str) -> str:
     return 'other'
 
 # --- Main Service Logic ---
-def process_document(saved_path: str, filename: str, user_id: str, user_role: str):
+def process_document(saved_path: str, file_id: str, filename: str, user_id: str, user_role: str):
     """
     The core background task for processing an uploaded document.
-    - Extracts text based on file type.
-    - Routes data to the correct ChromaDB collection based on user_role.
+    saved_path: The physical path on disk (likely named with UUID).
+    file_id: The UUID to use for Database/Vector tagging.
+    filename: The original filename (used for detecting type).
     """
-    logger.info(f"[USER:{user_id}] Starting processing for {filename} at {saved_path}")
+    logger.info(f"[USER:{user_id}] Starting processing for {filename} (ID: {file_id})")
     
     try:
         text = ""
-        file_type = get_file_type(filename)
+        file_type = get_file_type(filename) # Use original name for type detection
 
         # --- Route based on file type ---
         
         if file_type == 'pdf':
             logger.info(f"[USER:{user_id}] Processing as PDF...")
             try:
-                # First, try OCR
                 text = extract_text_from_pdf(saved_path)
             except Exception as e:
-                # Fallback to text-based extraction
                 logger.warning(f"[USER:{user_id}] PDF OCR failed ({e}), falling back to text extraction.")
                 reader = PdfReader(saved_path)
                 text = "\n".join([page.extract_text() or "" for page in reader.pages])
@@ -80,7 +78,6 @@ def process_document(saved_path: str, filename: str, user_id: str, user_role: st
         else:
             logger.warning(f"[USER:{user_id}] Skipping file: Unsupported file type '{filename}'")
             return
-        # --- End of routing ---
 
         if not text or text.isspace():
             logger.warning(f"[USER:{user_id}] No text extracted from {filename}.")
@@ -93,31 +90,33 @@ def process_document(saved_path: str, filename: str, user_id: str, user_role: st
 
         embs = embed_texts(chunks)
 
-        # --- MULTI-TENANCY: Select Collection based on Role ---
-        collection_name = "general_docs" # Default fallback
+        # --- MULTI-TENANCY: Select Collection(s) based on Role ---
+        # ALL users can access general_docs
+        # Specialized roles get ADDITIONAL specialized collections
+        collections_to_index = ["general_docs"]  # Default for ALL users
         
-        if user_role == "lawyer":
-            collection_name = "legal_docs"
-        elif user_role == "doctor":
-            collection_name = "medical_docs"
-        elif user_role == "researcher":
-            collection_name = "academic_docs"
-        elif user_role == "banker":
-            collection_name = "finance_docs"
+        if user_role == "lawyer": 
+            collections_to_index.append("legal_docs")
+        elif user_role == "doctor": 
+            collections_to_index.append("medical_docs")
+        elif user_role == "researcher": 
+            collections_to_index.append("academic_docs")
+        elif user_role == "student":
+            collections_to_index.append("academic_docs")  # <-- ADD THIS BACK
+        elif user_role == "banker": 
+            collections_to_index.append("finance_docs")
         
-        # Get the specific bucket for this role
-        col = get_collection(collection_name)
-
-        ids = [f"{filename}_{i}" for i in range(len(chunks))]
+        # Index to all applicable collections
+        ids = [f"{file_id}_{i}" for i in range(len(chunks))]
         metas = [
-            {"file_id": filename, "user_id": user_id, "chunk_num": i} 
+            {"file_id": file_id, "user_id": user_id, "chunk_num": i, "filename": filename} 
             for i in range(len(chunks))
         ]
+        
+        for collection_name in collections_to_index:
+            col = get_collection(collection_name)
+            col.upsert(ids=ids, documents=chunks, embeddings=embs, metadatas=metas)
+            logger.info(f"[USER:{user_id}] Successfully indexed {len(chunks)} chunks into '{collection_name}'.")
 
-        # UPSERT (Update or Insert) to prevent errors on re-processing
-        col.upsert(ids=ids, documents=chunks, embeddings=embs, metadatas=metas)
-        
-        logger.info(f"[USER:{user_id}] Successfully indexed {len(chunks)} chunks into '{collection_name}'.")
-        
     except Exception as e:
         logger.error(f"[USER:{user_id}] CRITICAL: Failed processing {filename}. Error: {e}", exc_info=True)

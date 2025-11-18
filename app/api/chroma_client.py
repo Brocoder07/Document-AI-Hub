@@ -11,12 +11,14 @@ def get_client():
         )
     return _client
 
-# FIX: Allow passing a dynamic name
 def get_collection(name: str):
     client = get_client()
     try:
-        # try to get it, create if not exists
-        return client.get_or_create_collection(name)
+        # FIX: Explicitly set the distance metric to "cosine"
+        return client.get_or_create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine"} 
+        )
     except Exception as e:
         print(f"Error getting collection {name}: {e}")
         raise e

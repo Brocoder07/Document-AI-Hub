@@ -1,7 +1,6 @@
 import sys
 import os
 from logging.config import fileConfig
-
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
@@ -15,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Import your Base model, models, and settings
 from app.db.base_class import Base
 from app.models.users import User # Import all your models here
+from app.models.documents import Document
 from app.core.config import settings
 
 # this is the Alembic Config object

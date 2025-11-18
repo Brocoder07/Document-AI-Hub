@@ -4,9 +4,9 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from typing import List
 import app.core.security as security
-import app.services.user_service as user_service # <-- IMPORT NEW SERVICE
-from app.db.session import get_db # <-- IMPORT DB SESSION
-from app.models.users import User # <-- IMPORT DB MODEL
+import app.services.user_service as user_service
+from app.db.session import get_db
+from app.models.users import User
 
 # Pydantic model for user *from the database*
 # This replaces the old UserInDB

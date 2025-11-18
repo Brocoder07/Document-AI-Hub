@@ -42,6 +42,5 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Ensure directories exist
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 os.makedirs(settings.OCR_TEMP_DIR, exist_ok=True)
 os.makedirs(settings.CHROMA_PERSIST_DIR, exist_ok=True)

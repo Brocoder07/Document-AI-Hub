@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from enum import Enum
+from typing import Optional, List
 from app.api.dependencies import get_current_active_user, UserInDB
 from app.services.rag_service import answer_query
-# Assumes you created app/core/limiter.py as discussed. 
-# If not, you can import 'limiter' from wherever you initialized it.
 from app.core.limiter import limiter 
 
 router = APIRouter()
@@ -28,26 +27,40 @@ class RetrievedDoc(BaseModel):
     id: str
     text: str
     meta: dict
+    score: float # Added score field
+
+class TokenMetrics(BaseModel):
+    input: int
+    output: int
+    total: int
+
+class RagMetrics(BaseModel):
+    processing_time_total: float
+    retrieval_time: float
+    generation_time: float
+    token_usage: TokenMetrics
+    similarity_score: float
+    confidence_category: str
+    confidence_score: float
+    hallucination_risk: str
 
 class RagResponse(BaseModel):
     answer: str
     retrieved: list[RetrievedDoc]
+    metrics: RagMetrics # Added metrics field
 
 # --- 3. Helper: RBAC Logic ---
 def check_mode_permission(user: UserInDB, mode: QueryMode):
     """
     Verifies if the current user has the required role for the selected mode.
     """
-    # Map modes to allowed roles. 
-    # "admin" is a superuser role that can access everything.
-    # "*" means any authenticated user can access.
     permissions = {
-        QueryMode.legal: ["lawyer", "admin"],
-        QueryMode.healthcare: ["doctor", "admin"],
-        QueryMode.finance: ["banker", "financial_analyst", "admin"],
-        QueryMode.academic: ["researcher", "student", "admin"],
-        QueryMode.business: ["employee", "executive", "admin"],
-        QueryMode.general: ["*"] # Accessible to everyone
+        QueryMode.legal: ["lawyer"],
+        QueryMode.healthcare: ["doctor"],
+        QueryMode.finance: ["banker", "financial_analyst"],
+        QueryMode.academic: ["researcher", "student"],
+        QueryMode.business: ["employee", "executive"],
+        QueryMode.general: ["*"] 
     }
     
     allowed_roles = permissions.get(mode, ["*"])
@@ -60,19 +73,12 @@ def check_mode_permission(user: UserInDB, mode: QueryMode):
 
 # --- 4. Endpoint ---
 @router.post("/answer", response_model=RagResponse)
-@limiter.limit("5/minute") # <-- Rate Limiting: 5 requests per minute per IP
+@limiter.limit("5/minute") 
 async def get_rag_answer(
-    request: Request, # <-- Required for slowapi rate limiter
+    request: Request, 
     rag_request: RagQueryRequest,
     current_user: UserInDB = Depends(get_current_active_user)
 ):
-    """
-    Generates an AI answer using RAG (Retrieval-Augmented Generation).
-    - Enforces Rate Limiting.
-    - Enforces Role-Based Access Control (RBAC).
-    - Supports specific 'Modes' (Legal, Medical, etc.).
-    """
-    
     # 1. Enforce RBAC
     check_mode_permission(current_user, rag_request.mode)
 
