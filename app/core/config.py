@@ -30,12 +30,14 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "data/documents"
     OCR_TEMP_DIR: str = "data/ocr_temp"
 
-    # OCR
-    TESSERACT_PATH: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    # OCR - FIX: Use forward slashes to avoid "\t" being read as a Tab character
+    TESSERACT_PATH: str = "C:/Program Files/Tesseract-OCR/tesseract.exe"
+    POPPLER_PATH: str = r"C:\Program Files\poppler-24.02.0\Library\bin"
 
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 settings = Settings()
 

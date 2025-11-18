@@ -4,6 +4,7 @@ uvicorn[standard]==0.27.1
 python-multipart==0.0.6
 streamlit==1.28.0
 python-dotenv==1.0.0
+slowapi==0.1.9
 
 # CLI / query language
 groq==0.34.0

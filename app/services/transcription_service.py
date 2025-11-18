@@ -2,7 +2,9 @@ import whisper
 import os
 
 _model = None
-_model_name = "tiny.en" # Use tiny for speed, or base.en
+# CHANGE THIS: Remove ".en" to use the multilingual model
+# Options: "tiny" (fastest), "base" (balanced), "small" (better quality)
+_model_name = "base"
 
 def get_whisper_model():
     """

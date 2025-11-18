@@ -33,8 +33,7 @@ def search_similar_documents(
     try:
         user_id = current_user.email
         
-        # --- THIS IS THE FIX ---
-        # Call the correctly named function
+        # Get the list of rich dictionaries
         results_list = retrieve_docs(
             query=request.query,
             user_id=user_id,
@@ -42,8 +41,9 @@ def search_similar_documents(
             top_k=request.top_k
         )
         
-        # Format for the pydantic response
-        results = [{"text": doc} for doc in results_list]
+        # FIX: Extract just the 'text' field because SearchResponse 
+        # currently only expects text.
+        results = [{"text": doc["text"]} for doc in results_list]
         
         return SearchResponse(results=results)
         

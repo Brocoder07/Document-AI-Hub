@@ -12,7 +12,7 @@ class CustomGroqLLM(LLM):
     def _llm_type(self) -> str:
         return "custom_groq"
     
-    def _call(self, prompt: str, stop: Optional[List[str]] = None, **kwargs) -> str:
+    def _call(self, prompt: str, stop: Optional[List[str]] = None, run_manager: Optional[Any] = None, **kwargs) -> str:
         """Fix: Added **kwargs to handle extra parameters"""
         client = GroqClient(api_key=self.groq_api_key)
         

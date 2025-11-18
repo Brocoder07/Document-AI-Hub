@@ -23,14 +23,16 @@ class UserCreate(BaseModel):
     email: EmailStr
     full_name: str
     password: str
+    role: str  # <--- FIX: Removed default="user". User MUST provide this.
 
 class UserPublic(BaseModel):
     username: str
     email: EmailStr
     full_name: str
+    role: str
 
     class Config:
-        from_attributes = True # Pydantic v2 way to read from ORM
+        from_attributes = True 
 
 
 # --- Endpoints ---
@@ -42,7 +44,6 @@ async def login_for_access_token(
 ):
     """
     OAuth2 compatible token endpoint.
-    Takes username (email) and password from a form body.
     """
     user = user_service.authenticate_user(
         db, 
@@ -71,7 +72,8 @@ async def register_user(
     db: Session = Depends(get_db)
 ):
     """
-    User registration endpoint.
+    User registration endpoint. 
+    Now enforces explicit role selection.
     """
     if user_service.get_user_by_email(db, email=user_in.email):
         raise HTTPException(
@@ -83,9 +85,15 @@ async def register_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered",
         )
-        
-    user = user_service.create_user(db, user_data=user_in.model_dump())
     
-    # --- THIS IS THE FIX ---
-    # Change from .model_from_object() to .model_validate()
-    return UserPublic.model_validate(user)
+    try:
+        # Pass data to service. The service will enforce Role logic.
+        user = user_service.create_user(db, user_data=user_in.model_dump())
+        return UserPublic.model_validate(user)
+        
+    except ValueError as e:
+        # Catch the "You cannot create admin account" error here
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, # 403 is appropriate for unauthorized role attempts
+            detail=str(e)
+        )

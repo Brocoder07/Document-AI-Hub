@@ -1,16 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from app.api.dependencies import get_current_active_user, UserInDB
-from app.services.ocr_service import extract_text_from_pdf
-from app.core.config import settings # To get UPLOAD_DIR
+from app.services.ocr_service import extract_text_from_pdf, extract_text_from_image
 import os
+from PIL import Image
 
 router = APIRouter()
 
 # --- Pydantic Schemas ---
 
 class OcrRequest(BaseModel):
-    file_id: str # This should be the unique ID of the file
+    file_id: str 
 
 class OcrResponse(BaseModel):
     file_id: str
@@ -24,34 +24,42 @@ async def extract_text_ocr(
     current_user: UserInDB = Depends(get_current_active_user)
 ):
     """
-    Runs OCR on an *already uploaded* PDF file.
-    NOTE: This is a slow, blocking operation.
+    Runs OCR on an *already uploaded* file (PDF or Image).
     """
     
-    # TODO: Add logic to check if current_user owns file_id
-    # 1. Get user_id from current_user.email
-    # 2. Query PostgreSQL: get_document(file_id=request.file_id, user_id=user_id)
-    # 3. If doc is None, raise HTTPException 404 or 403
-    # 4. Get the document's 'saved_path' from the DB
-    
-    # --- FAKE PATH (replace with DB logic) ---
-    fake_path = os.path.join(settings.UPLOAD_DIR, request.file_id)
-    if not os.path.exists(fake_path):
+    # FIX: Construct the correct user-specific path
+    user_dir = os.path.join("data", "users", current_user.email, "documents")
+    file_path = os.path.join(user_dir, request.file_id)
+
+    if not os.path.exists(file_path):
          raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found. (Note: Use the *unique* file ID, not the filename)"
+            detail=f"File not found at {file_path}. Ensure you used the correct file_id."
         )
-    # --- END FAKE PATH ---
 
     try:
-        # This is very slow!
-        text = extract_text_from_pdf(fake_path)
+        # Check file extension to decide between PDF or Image OCR
+        ext = request.file_id.split('.')[-1].lower()
+        
+        if ext == "pdf":
+            text = extract_text_from_pdf(file_path)
+        elif ext in ["png", "jpg", "jpeg", "tiff", "bmp"]:
+            # For images, we need to open the file object
+            image = Image.open(file_path)
+            text = extract_text_from_image(image)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type for OCR: {ext}"
+            )
         
         return OcrResponse(
             file_id=request.file_id,
             extracted_text=text
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

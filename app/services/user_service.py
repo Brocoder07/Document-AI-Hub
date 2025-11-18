@@ -4,33 +4,46 @@ from app.core.security import get_password_hash, verify_password
 from pydantic import EmailStr
 
 def get_user_by_email(db: Session, email: EmailStr) -> User | None:
-    """
-    Retrieves a user from the database by their email.
-    """
     return db.query(User).filter(User.email == email).first()
 
 def get_user_by_username(db: Session, username: str) -> User | None:
-    """
-    Retrieves a user from the database by their username.
-    """
     return db.query(User).filter(User.username == username).first()
 
-def create_user(db: Session, user_data: dict) -> User:
+def get_user_by_id(db: Session, user_id: int) -> User | None:
+    return db.query(User).filter(User.id == user_id).first()
+
+def create_user(db: Session, user_data: dict, allow_admin_role: bool = False) -> User:
     """
-    Creates a new user in the database.
-    'user_data' should be a dict with 'username', 'email', 'full_name', 'password'.
+    Creates a new user.
+    Strictly enforces role validation and prevents unauthorized admin creation.
     """
     if len(user_data["password"].encode('utf-8')) > 72:
         raise ValueError("Password exceeds maximum length of 72 bytes.")
+    
     hashed_password = get_password_hash(user_data["password"])
     
+    # 1. Get requested role
+    requested_role = user_data.get("role")
+    if not requested_role:
+        raise ValueError("Role is required. You must specify if you are a student, lawyer, doctor, etc.")
+    
+    # 2. Security Check: Block unauthorized Admin creation
+    if requested_role == "admin" and not allow_admin_role:
+        raise ValueError("You cannot create admin account, this function is only entitled to roles with 'admin' tag.")
+        
+    # 3. Validate Role Whitelist
+    valid_roles = ["student", "researcher", "lawyer", "doctor", "banker", "employee", "admin"]
+    
+    if requested_role not in valid_roles:
+        raise ValueError(f"Invalid role '{requested_role}'. Allowed roles: {', '.join(valid_roles)}")
+
     db_user = User(
         username=user_data["username"],
         email=user_data["email"],
         full_name=user_data.get("full_name"),
         hashed_password=hashed_password,
         is_active=True,
-        role="user" # Default role
+        role=requested_role
     )
     
     db.add(db_user)
@@ -39,16 +52,38 @@ def create_user(db: Session, user_data: dict) -> User:
     return db_user
 
 def authenticate_user(db: Session, email: EmailStr, password: str) -> User | None:
-    """
-    Authenticates a user.
-    Returns the user object if successful, None otherwise.
-    """
     user = get_user_by_email(db, email=email)
-    
     if not user:
-        return None # User not found
-    
+        return None
     if not verify_password(password, user.hashed_password):
-        return None # Incorrect password
-        
+        return None
     return user
+
+def update_user(db: Session, db_user: User, update_data: dict) -> User:
+    for key, value in update_data.items():
+        if key == "password" and value:
+            if len(value.encode('utf-8')) > 72:
+                raise ValueError("Password exceeds maximum length of 72 bytes.")
+            hashed_pw = get_password_hash(value)
+            setattr(db_user, "hashed_password", hashed_pw)
+        else:
+            setattr(db_user, key, value)
+
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+def soft_delete_user(db: Session, db_user: User) -> User:
+    db_user.is_active = False
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+# --- NEW FUNCTION ---
+def get_all_users(db: Session, skip: int = 0, limit: int = 100) -> list[User]:
+    """
+    Retrieve all users, including inactive (soft-deleted) ones.
+    """
+    return db.query(User).offset(skip).limit(limit).all()

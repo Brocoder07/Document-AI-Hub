@@ -1,15 +1,13 @@
 from PyPDF2 import PdfReader
 from app.services.chunking import chunk_text
 from app.services.embedding_service import embed_texts
-# --- THIS IS THE FIX ---
 from app.api.chroma_client import get_collection 
-# --- (Was app.api.utility.chroma_client) ---
-
 from app.services.ocr_service import extract_text_from_pdf, extract_text_from_image
 from app.services.transcription_service import transcribe_audio
 import logging
 import mimetypes
 from PIL import Image
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,17 +20,18 @@ def get_file_type(filename: str) -> str:
         return 'pdf'
     if extension in ['png', 'jpg', 'jpeg', 'tiff', 'bmp']:
         return 'image'
-    if extension in ['mp3', 'wav', 'm4a', 'mp4']: # Added mp4 for video's audio
+    if extension in ['mp3', 'wav', 'm4a', 'mp4']:
         return 'audio'
     if extension in ['txt', 'md']:
         return 'text'
     return 'other'
 
 # --- Main Service Logic ---
-def process_document(saved_path: str, filename: str, user_id: str):
+def process_document(saved_path: str, filename: str, user_id: str, user_role: str):
     """
     The core background task for processing an uploaded document.
-    Now correctly routes files to different services.
+    - Extracts text based on file type.
+    - Routes data to the correct ChromaDB collection based on user_role.
     """
     logger.info(f"[USER:{user_id}] Starting processing for {filename} at {saved_path}")
     
@@ -94,7 +93,20 @@ def process_document(saved_path: str, filename: str, user_id: str):
 
         embs = embed_texts(chunks)
 
-        col = get_collection("documents")
+        # --- MULTI-TENANCY: Select Collection based on Role ---
+        collection_name = "general_docs" # Default fallback
+        
+        if user_role == "lawyer":
+            collection_name = "legal_docs"
+        elif user_role == "doctor":
+            collection_name = "medical_docs"
+        elif user_role == "researcher":
+            collection_name = "academic_docs"
+        elif user_role == "banker":
+            collection_name = "finance_docs"
+        
+        # Get the specific bucket for this role
+        col = get_collection(collection_name)
 
         ids = [f"{filename}_{i}" for i in range(len(chunks))]
         metas = [
@@ -102,8 +114,10 @@ def process_document(saved_path: str, filename: str, user_id: str):
             for i in range(len(chunks))
         ]
 
-        col.add(ids=ids, documents=chunks, embeddings=embs, metadatas=metas)
-        logger.info(f"[USER:{user_id}] Successfully indexed {len(chunks)} chunks for {filename}.")
+        # UPSERT (Update or Insert) to prevent errors on re-processing
+        col.upsert(ids=ids, documents=chunks, embeddings=embs, metadatas=metas)
+        
+        logger.info(f"[USER:{user_id}] Successfully indexed {len(chunks)} chunks into '{collection_name}'.")
         
     except Exception as e:
         logger.error(f"[USER:{user_id}] CRITICAL: Failed processing {filename}. Error: {e}", exc_info=True)

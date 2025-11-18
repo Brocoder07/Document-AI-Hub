@@ -3,7 +3,6 @@ from pydantic import BaseModel
 import hashlib
 import os
 from app.api.dependencies import get_current_active_user, UserInDB
-from app.common_utils.file_handler import save_upload
 from app.services.file_processing_service import process_document
 
 router = APIRouter()
@@ -66,15 +65,18 @@ async def upload_document(
         
         # Check if this file already exists for this user
         existing_files = []
-        for existing_file in os.listdir(user_dir):
-            if existing_file.startswith("temp_"):
-                continue
-            existing_path = os.path.join(user_dir, existing_file)
-            if get_file_hash(existing_path) == file_hash:
-                existing_files.append(existing_file)
+        if os.path.exists(user_dir):
+            for existing_file in os.listdir(user_dir):
+                if existing_file.startswith("temp_"):
+                    continue
+                existing_path = os.path.join(user_dir, existing_file)
+                if get_file_hash(existing_path) == file_hash:
+                    existing_files.append(existing_file)
         
         if existing_files:
             os.remove(temp_path)  # Remove temp file
+            # We can either raise an error OR just re-process the existing file.
+            # Raising error is safer to avoid confusion.
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"File already exists: {existing_files[0]}"
@@ -82,10 +84,21 @@ async def upload_document(
         
         # Move temp file to final location
         final_path = os.path.join(user_dir, filename)
+        # If file exists with same name but different content, overwrite or rename.
+        # Here we overwrite if name matches (but hash check above usually catches duplicates)
+        if os.path.exists(final_path):
+             os.remove(final_path)
         os.rename(temp_path, final_path)
         
         # Schedule processing
-        background_tasks.add_task(process_document, final_path, filename, current_user.email)
+        # FIX: PASS THE USER ROLE TO THE SERVICE
+        background_tasks.add_task(
+            process_document, 
+            saved_path=final_path, 
+            filename=filename, 
+            user_id=current_user.email,
+            user_role=current_user.role 
+        )
         
         return UploadResponse(
             status="File uploaded successfully",
@@ -121,7 +134,7 @@ async def list_user_files(
                 file_path = os.path.join(user_dir, filename)
                 files.append({
                     "filename": filename,
-                    "file_id": filename,  # Use filename as ID
+                    "file_id": filename,
                     "size": os.path.getsize(file_path),
                     "uploaded_at": os.path.getctime(file_path)
                 })
