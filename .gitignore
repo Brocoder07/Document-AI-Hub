@@ -49,6 +49,9 @@ data/embeddings/chroma_db/
 data/chroma/
 chroma/
 chroma_db/
+data/documents
+data/ocr_temp
+data/users
 
 # If your OCR pipeline generates intermediate images:
 data/ocr_temp/
