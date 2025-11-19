@@ -24,11 +24,12 @@ alembic==1.12.1
 pydantic>=2.5.0,<3.0.0
 pydantic-settings==2.1.0
 
-# AI/ML & Vector DB
+# AI/ML, Vector DB, transcription
 sentence-transformers==2.2.2
 chromadb==0.4.15
 huggingface-hub==0.19.4
 openai-whisper==20231117
+pydub==0.25.1
 
 # LangChain (compatible versions)
 langchain==0.1.20
