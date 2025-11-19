@@ -1,55 +1,48 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, status, Form
+from pydantic import BaseModel
 from app.api.dependencies import get_current_active_user, UserInDB
-# --- IMPORT THE NEW LANGCHAIN SERVICE ---
 from app.services.summarization_service import summarize_text_async 
-# --- (The old 'generator_service' import is gone) ---
 
 router = APIRouter()
 
-# --- Pydantic Schemas (Unchanged) ---
-
-class SummarizeRequest(BaseModel):
-    text: str
-    method: str = Field(default="extractive", description="Hint for summarization style (e.g., extractive, abstractive)")
-    length: str = Field(default="a few sentences", description="e.g., 'one paragraph', 'three bullet points'")
-
+# --- Pydantic Schemas ---
+# We keep the Response model as Pydantic/JSON
 class SummarizeResponse(BaseModel):
     summary: str
 
-# --- Endpoints (Updated) ---
+# --- Endpoints ---
 
 @router.post("/text", response_model=SummarizeResponse)
 async def summarize_large_text(
-    request: SummarizeRequest,
+    # CHANGED: Use Form(...) instead of a JSON Body.
+    # This allows users to send raw text with newlines without JSON errors.
+    text: str = Form(..., description="The large text to summarize. Newlines are allowed."),
+    method: str = Form("extractive", description="Hint for summarization style (e.g., extractive, abstractive)"),
     current_user: UserInDB = Depends(get_current_active_user)
 ):
     """
-    Summarizes a large block of text.
-    This endpoint now calls the summarization service
-    which handles complex logic like map-reduce.
+    Summarizes a large block of text. 
+    Now accepts 'application/x-www-form-urlencoded' or 'multipart/form-data'.
+    This solves the 'JSON decode error' for text containing actual newlines.
     """
     
-    if not request.text or request.text.isspace():
+    if not text or text.isspace():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Text cannot be empty."
         )
 
     try:
-        # --- LOGIC MOVED TO SERVICE ---
-        # Call the new async service function
+        # Call service with the requested text and method.
         summary = await summarize_text_async(
-            text=request.text,
-            method=request.method,
-            length=request.length
+            text=text,
+            method=method,
+            length="a few sentences" 
         )
-        # --- END OF MOVED LOGIC ---
         
         return SummarizeResponse(summary=summary)
         
     except Exception as e:
-        # This will catch errors from the Groq API or LangChain
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate summary: {str(e)}"

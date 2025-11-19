@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from app.api.dependencies import get_current_active_user, UserInDB
-# FIX: Import the new function
 from app.services.rag_service import retrieve_with_scores 
+from typing import Dict, Any
 
 router = APIRouter()
 
@@ -10,14 +10,13 @@ router = APIRouter()
 
 class SearchQueryRequest(BaseModel):
     query: str
-    file_id: str | None = None
     top_k: int = Field(default=3, gt=0, le=10)
-    # Optional: Allow mode selection in search too, defaulting to general
     mode: str = "general" 
 
 class RetrievedDoc(BaseModel):
-    text: str
-    score: float # <--- Added score field
+    document_id: str 
+    score: float
+    metadata: Dict[str, Any] # <--- NEW FIELD
 
 class SearchResponse(BaseModel):
     results: list[RetrievedDoc]
@@ -31,26 +30,27 @@ def search_similar_documents(
 ):
     """
     Performs a vector similarity search on the user's documents.
-    Returns text segments with their similarity scores (0 to 1).
+    Returns document IDs, scores, and METADATA (filename, etc.).
     """
     try:
         user_id = current_user.email
         
-        # FIX: Call the new function
         # retrieve_with_scores returns: (results, retrieval_time, scores)
         results_list, _, _ = retrieve_with_scores(
             query=request.query,
             user_id=user_id,
-            file_id=request.file_id,
-            mode=request.mode,
+            file_id=None, 
+            mode=request.mode, 
             top_k=request.top_k
         )
         
         # Format for the pydantic response
-        # The results_list already contains dicts with 'text' and 'score' keys
-        # from our update in rag_service.py
         formatted_results = [
-            RetrievedDoc(text=doc["text"], score=doc["score"]) 
+            RetrievedDoc(
+                document_id=doc["id"], 
+                score=doc["score"],
+                metadata=doc["meta"] # <--- Pass metadata to response
+            ) 
             for doc in results_list
         ]
         
