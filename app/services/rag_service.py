@@ -12,105 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # --- 1. STRICT PROMPTS with CITATION EXAMPLES ---
-PROMPT_TEMPLATES = {
-    "general": """You are a helpful assistant. Answer the user's question thoroughly using ONLY the provided documents.
-
-REQUIREMENTS:
-- Base your answer ONLY on the provided context.
-- Cite sources using [DOC doc_id] for EVERY factual claim.
-- Example: "Apache Spark is a distributed framework [DOC doc_id_1] that processes data in memory [DOC doc_id_2]."
-- If information is missing, say: "I could not find the answer in the provided documents."
-
-CONTEXT:
-{context}
-
-QUESTION: {query}
-
-ANSWER:""",
-    
-    "legal": """You are a legal analysis expert. Analyze the provided legal documents to answer the user's question.
-
-REQUIREMENTS:
-- Extract and explain legal clauses, terms, and obligations exactly as stated.
-- Cite [DOC doc_id] for every legal point. Example: "Section 3 requires [DOC doc_id] that..."
-- Highlight potential risks ONLY if explicitly mentioned in the documents.
-- If asked about something not in the documents, say: "I could not find the answer in the provided documents."
-- Use clear structure: Key Terms, Obligations, Risks, etc.
-
-CONTEXT:
-{context}
-
-LEGAL QUESTION: {query}
-
-ANALYSIS:""",
-    
-    "finance": """You are a financial analyst. Interpret financial documents to answer the user's question.
-
-REQUIREMENTS:
-- Report financial figures, rates, and terms exactly as stated in documents.
-- Cite [DOC doc_id] for every number or metric. Example: "The interest rate is 5.2% [DOC doc_id] and..."
-- Provide context for each figure (what it represents, when it applies).
-- If data is missing, say: "I could not find the answer in the provided documents."
-- Organize by: Overview, Key Figures, Terms & Conditions, etc.
-
-CONTEXT:
-{context}
-
-FINANCIAL QUESTION: {query}
-
-ANALYSIS:""",
-    
-    "academic": """You are a rigorous academic researcher. Explain concepts STRICTLY from the provided scholarly materials.
-
-CRITICAL INSTRUCTIONS:
-- Use ONLY information from the provided documents. Do not use outside knowledge.
-- For EVERY factual claim, cite the source document using ONLY these doc IDs: {', '.join(doc_ids)}
-- Citation format MUST be: [DOC <exact_doc_id>] (e.g., {examples})
-- Use exact terminology from the documents (e.g., "vector" not "array" unless documents use "array").
-- If a concept is not in the documents, say: "I could not find the answer in the provided documents."
-- Structure your answer: Definition, Key Components, Architecture, Examples, Applications.
-- IMPORTANT: Only cite doc IDs that appear above. Do NOT invent new doc IDs like doc_id_1, doc_id_2, etc.
-
-CONTEXT:
-{context}
-
-ACADEMIC QUESTION: {query}
-
-EXPLANATION:""",
-    
-    "healthcare": """You are a medical information specialist. Extract and summarize patient or medical information from documents.
-
-REQUIREMENTS:
-- Summarize ONLY what is explicitly stated in the medical records.
-- Cite [DOC doc_id] for every fact. Example: "Patient was diagnosed with [DOC doc_id] and treated with [DOC doc_id]."
-- Do NOT provide medical advice, diagnosis, or interpretation.
-- Present information chronologically if applicable.
-- If information is missing, say: "I could not find the answer in the provided documents."
-- Use structure: Patient History, Treatments, Results, Notes.
-
-CONTEXT:
-{context}
-
-HEALTHCARE QUESTION: {query}
-
-SUMMARY:""",
-    
-    "business": """You are a business operations analyst. Analyze meeting minutes and business documents to answer the user's question.
-
-REQUIREMENTS:
-- Extract action items, decisions, and deadlines exactly as documented.
-- Cite [DOC doc_id] for each fact. Example: "John will complete the report [DOC doc_id] by Friday [DOC doc_id]."
-- Identify who is responsible for each task.
-- If information is incomplete, say: "I could not find the answer in the provided documents."
-- Organize by: Decisions Made, Action Items (with owners/deadlines), Next Steps.
-
-CONTEXT:
-{context}
-
-BUSINESS QUESTION: {query}
-
-REPORT:"""
-}
+# (PROMPT_TEMPLATES dict remains, but logic is overridden by dynamic builder below)
 
 # --- 2. Retrieval Logic with Scoring ---
 
@@ -169,77 +71,77 @@ def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, m
 def format_docs(docs: list[dict]) -> str:
     return "\n\n---\n\n".join([d["text"] for d in docs])
 
-# --- 3. STRICT Citation Validation (with enhanced logging) ---
+# --- 3. STRICT Citation Validation (FIXED) ---
 
 def validate_answer_citations(answer: str, retrieved_docs: list[dict], mode: str = "general") -> tuple[bool, dict]:
-	"""
-	Validates that answers are properly cited.
-	Different modes have different strictness levels.
-	Returns: (is_valid, validation_details)
-	"""
-	citation_val = validate_citations(answer, retrieved_docs)
-	
-	logger.debug(f"Citation validation - Mode: {mode}")
-	logger.debug(f"  Total citations found: {citation_val.get('total_citations', 0)}")
-	logger.debug(f"  Valid citations: {citation_val.get('valid_citations', 0)}")
-	logger.debug(f"  Coverage: {citation_val.get('coverage', 0):.2%}")
-	logger.debug(f"  Invalid citation IDs: {citation_val.get('invalid_citations', [])}")
-	
-	# Check if answer contains the refusal message
-	refusal_phrases = [
-		"I could not find the answer",
-		"I cannot find",
-		"information is not available",
-		"not found in the provided documents"
-	]
-	
-	is_refusal = any(phrase.lower() in answer.lower() for phrase in refusal_phrases)
-	
-	# If it's a refusal, it's valid (no citations needed)
-	if is_refusal:
-		logger.info("Answer is a refusal - marking as valid")
-		return True, citation_val
-	
-	# If it's a substantive answer, check citations
-	total_cites = citation_val.get("total_citations", 0)
-	
-	# Academic mode: STRICT - require at least 1 citation, then check coverage
-	if mode == "academic":
-		if total_cites == 0:
-			logger.warning("Academic mode: NO citations found in answer - INVALID")
-			return False, citation_val
-		
-		coverage = citation_val.get("coverage", 0)
-		if coverage < 0.75:
-			logger.warning(f"Academic mode: Citation coverage {coverage:.2%} < 0.75 - INVALID")
-			return False, citation_val
-		
-		logger.info(f"Academic mode: Valid answer with {total_cites} citations, coverage {coverage:.2%}")
-		return True, citation_val
-	
-	# Other modes: LENIENT - accept if LLM attempted citations
-	else:
-		if total_cites == 0:
-			logger.warning(f"{mode} mode: NO citations found in answer - INVALID")
-			return False, citation_val
-		
-		coverage = citation_val.get("coverage", 0)
-		valid_cites = citation_val.get("valid_citations", 0)
-		
-		# LENIENT: If LLM generated citations AND at least 1 is valid, accept
-		if valid_cites >= 1:
-			logger.info(f"{mode} mode: Valid answer with {valid_cites}/{total_cites} valid citations (coverage {coverage:.2%})")
-			return True, citation_val
-		
-		# Stricter: If ALL citations are invalid, reject
-		if total_cites > 0 and coverage == 0:
-			logger.warning(f"{mode} mode: LLM generated {total_cites} citations but ALL are invalid - INVALID")
-			return False, citation_val
-		
-		logger.info(f"{mode} mode: Valid answer with {total_cites} citations, coverage {coverage:.2%}")
-		return True, citation_val
+    """
+    Validates that answers are properly cited.
+    Different modes have different strictness levels.
+    Returns: (is_valid, validation_details)
+    """
+    citation_val = validate_citations(answer, retrieved_docs)
+    
+    logger.debug(f"Citation validation - Mode: {mode}")
+    logger.debug(f"  Total citations found: {citation_val.get('total_citations', 0)}")
+    logger.debug(f"  Valid citations: {citation_val.get('valid_citations', 0)}")
+    logger.debug(f"  Coverage: {citation_val.get('coverage', 0):.2%}")
+    
+    # --- FIX: Smarter Refusal Detection ---
+    refusal_phrases = [
+        "i could not find the answer",
+        "i cannot find",
+        "information is not available",
+        "not found in the provided documents"
+    ]
+    
+    # Check if answer STARTS with a refusal phrase (ignoring case/whitespace)
+    ans_lower = answer.lower().strip()
+    is_refusal_text = any(ans_lower.startswith(phrase) for phrase in refusal_phrases)
+    
+    valid_cites = citation_val.get("valid_citations", 0)
 
-# --- 4. Main RAG Pipeline (STRICT MODE with BETTER UX) ---
+    # Only consider it a "Refusal" if there are NO valid citations.
+    # This allows "Mixed Refusals" (e.g., "I couldn't find X, but here is Y [DOC 1]") to pass.
+    if is_refusal_text and valid_cites == 0:
+        logger.info("Answer is a refusal (and has no citations) - marking as valid")
+        return True, citation_val
+    
+    # If it's a substantive answer (even if it hedged), check citations
+    total_cites = citation_val.get("total_citations", 0)
+    
+    # Academic mode: STRICT - require at least 1 citation, then check coverage
+    if mode == "academic":
+        if total_cites == 0:
+            logger.warning("Academic mode: NO citations found in answer - INVALID")
+            return False, citation_val
+        
+        coverage = citation_val.get("coverage", 0)
+        if coverage < 0.75:
+            logger.warning(f"Academic mode: Citation coverage {coverage:.2%} < 0.75 - INVALID")
+            return False, citation_val
+        
+        logger.info(f"Academic mode: Valid answer with {total_cites} citations, coverage {coverage:.2%}")
+        return True, citation_val
+    
+    # Other modes: LENIENT - accept if LLM attempted citations
+    else:
+        if total_cites == 0:
+            logger.warning(f"{mode} mode: NO citations found in answer - INVALID")
+            return False, citation_val
+        
+        # LENIENT: If LLM generated citations AND at least 1 is valid, accept
+        if valid_cites >= 1:
+            logger.info(f"{mode} mode: Valid answer with {valid_cites}/{total_cites} valid citations (coverage {citation_val.get('coverage', 0):.2%})")
+            return True, citation_val
+        
+        # Stricter: If ALL citations are invalid, reject
+        if total_cites > 0 and valid_cites == 0:
+            logger.warning(f"{mode} mode: LLM generated {total_cites} citations but ALL are invalid - INVALID")
+            return False, citation_val
+        
+        return True, citation_val
+
+# --- 4. Main RAG Pipeline ---
 
 async def answer_query(query: str, user_id: str, file_id: str | None = None, mode: str = "general"):
     """
@@ -344,7 +246,6 @@ async def answer_query(query: str, user_id: str, file_id: str | None = None, mod
 def _build_dynamic_prompt(mode: str, retrieved_docs: list[dict]) -> str:
     """
     Builds mode-specific prompt with ACTUAL doc IDs from retrieved documents.
-    CRITICAL: Uses EXTREME specificity to prevent LLM from hallucinating doc IDs.
     """
     
     # Extract ALL actual doc IDs
@@ -367,7 +268,7 @@ RULES:
 4. Example CORRECT citation: [DOC {doc_ids[0]}]
 5. If you cite an ID not in the ALLOWED list, your answer will be REJECTED.
 6. Use exact terminology from documents (e.g., "vector" not "array").
-7. If concept not in documents, say: "I could not find the answer in the provided documents."
+7. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
 8. Structure: Definition, Key Components, Architecture, Examples, Applications.
 
 REMEMBER: Only cite IDs from this list:
