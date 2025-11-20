@@ -50,6 +50,7 @@ class RagMetrics(BaseModel):
     confidence_score: float
     hallucination_risk: str
     citation_validation: dict
+    evaluation: dict = {}
 
 class RagResponse(BaseModel):
     answer: str

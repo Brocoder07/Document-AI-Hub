@@ -1,13 +1,15 @@
 from PyPDF2 import PdfReader
 from app.services.chunking import chunk_text
 from app.services.embedding_service import embed_texts
-from app.api.chroma_client import get_collection
+from app.api.chroma_client import get_collection 
 from app.services.ocr_service import extract_text_from_pdf, extract_text_from_image
 from app.services.transcription_service import transcribe_audio
+# IMPORT THE NEW READER FUNCTIONS
+from app.services.document_reader import read_text_file, read_docx_file
 import logging
 from PIL import Image
 import os
-import docx
+# REMOVED: import docx (logic moved)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -66,32 +68,20 @@ def process_document(saved_path: str, file_id: str, filename: str, user_id: str,
                 logger.error(f"[USER:{user_id}] Audio transcription failed: {e}")
                 return
         
+        # --- REFACTORED: Use document_reader for Text ---
         elif file_type == 'text':
             logger.info(f"[USER:{user_id}] Processing as Text...")
             try:
-                # Try UTF-8 first (Standard)
-                with open(saved_path, 'r', encoding='utf-8') as f:
-                    text = f.read()
-            except UnicodeDecodeError:
-                # Fallback to CP1252 (Common on Windows for smart quotes, etc.)
-                logger.warning(f"[USER:{user_id}] UTF-8 decode failed. Retrying with cp1252...")
-                try:
-                    with open(saved_path, 'r', encoding='cp1252') as f:
-                        text = f.read()
-                except Exception as e:
-                    # Last resort: Latin-1 (Reads bytes directly, never fails but might garble chars)
-                    logger.warning(f"[USER:{user_id}] CP1252 failed. Retrying with latin-1...")
-                    with open(saved_path, 'r', encoding='latin-1') as f:
-                        text = f.read()
+                text = read_text_file(saved_path, user_id)
             except Exception as e:
-                logger.error(f"[USER:{user_id}] Could not read {saved_path} as text. Error: {e}")
+                logger.error(f"[USER:{user_id}] Text processing failed: {e}")
                 return
 
+        # --- REFACTORED: Use document_reader for DOCX ---
         elif file_type == 'docx':
             logger.info(f"[USER:{user_id}] Processing as Word Document...")
             try:
-                doc = docx.Document(saved_path)
-                text = "\n".join([para.text for para in doc.paragraphs])
+                text = read_docx_file(saved_path)
             except Exception as e:
                 logger.error(f"[USER:{user_id}] Word processing failed: {e}")
                 return
@@ -112,22 +102,22 @@ def process_document(saved_path: str, file_id: str, filename: str, user_id: str,
         embs = embed_texts(chunks)
 
         # --- MULTI-TENANCY: Select Collection(s) based on Role ---
-        collections_to_index = ["general_docs"]
+        collections_to_index = ["general_docs"] 
         
-        if user_role == "lawyer":
+        if user_role == "lawyer": 
             collections_to_index.append("legal_docs")
-        elif user_role == "doctor":
+        elif user_role == "doctor": 
             collections_to_index.append("medical_docs")
-        elif user_role == "researcher":
+        elif user_role == "researcher": 
             collections_to_index.append("academic_docs")
         elif user_role == "student":
             collections_to_index.append("academic_docs")
-        elif user_role == "banker":
+        elif user_role == "banker": 
             collections_to_index.append("finance_docs")
         elif user_role == "financial_analyst":
-            collections_to_index.append("finance_docs")
+             collections_to_index.append("finance_docs")
         elif user_role in ["employee", "executive"]:
-            collections_to_index.append("business_docs") 
+             collections_to_index.append("business_docs") 
         
         # Index to all applicable collections
         ids = [f"{file_id}_{i}" for i in range(len(chunks))]
