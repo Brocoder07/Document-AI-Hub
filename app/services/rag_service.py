@@ -3,37 +3,86 @@ from app.services.embedding_service import embed_texts
 from app.core.llm import get_llm
 from app.generation.citation_enforcer import validate_citations
 from app.metrics.confidence_calculator import calculate_confidence
+from app.services.evaluator import evaluator
 
 from langchain.prompts import ChatPromptTemplate, PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough, RunnableParallel
 import time
 import logging
 import re
-from typing import Optional
+from typing import Optional, List, Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# --- 1. Retrieval Logic with Scoring ---
+# --- 1. SMART RETRIEVAL HELPERS ---
 
-def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
+async def route_query(query: str) -> str:
+    """
+    Classifies query as 'general' (conceptual) or 'specific' (fact-based).
+    """
+    llm = get_llm()
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a query router. Classify the following question as either 'general' (asking for concepts, summaries, high-level explanations) or 'specific' (asking for specific facts, numbers, names, clauses). Output ONLY 'general' or 'specific'."),
+        ("user", "{query}")
+    ])
+    chain = prompt | llm
+    try:
+        response = await chain.ainvoke({"query": query})
+        return response.content.strip().lower()
+    except:
+        return "specific" # Default fallback
+
+async def generate_hyde_query(query: str) -> str:
+    """
+    Generates a hypothetical answer to improve retrieval for general questions.
+    """
+    llm = get_llm()
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are an expert assistant. Generate a short, hypothetical passage that answers the user's question perfectly. Do not include conversational filler."),
+        ("user", "{query}")
+    ])
+    chain = prompt | llm
+    try:
+        response = await chain.ainvoke({"query": query})
+        return response.content.strip()
+    except:
+        return query # Fallback to original query
+
+# --- 2. Retrieval Logic with Scoring ---
+
+async def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
     """
     Retrieves documents AND their similarity scores.
+    Now supports Smart Retrieval (HyDE) when applicable.
     """
     start_time = time.time()
     
+    # A. Smart Query Transformation
+    search_query = query
+    
+    # Only use HyDE if we are searching broadly (no specific file_id) 
+    # and the mode implies general knowledge retrieval
+    if not file_id and mode in ["general", "academic"]:
+        query_type = await route_query(query)
+        if "general" in query_type:
+            logger.info(f"🔄 General query detected. Generating HyDE...")
+            hyde_answer = await generate_hyde_query(query)
+            search_query = hyde_answer
+            logger.info("✅ Using HyDE for retrieval.")
+            
+    # B. Standard Retrieval
     collection_map = {
         "legal": "legal_docs",
         "healthcare": "medical_docs",
         "academic": "academic_docs",
         "finance": "finance_docs",
-        # FIX: Now points to the dedicated 'business_docs' collection
         "business": "business_docs",
         "general": "general_docs" 
     }
     target_collection = collection_map.get(mode, "general_docs")
     col = get_collection(target_collection)
     
-    q_emb = embed_texts([query])[0]
+    q_emb = embed_texts([search_query])[0]
 
     base_filter = {"user_id": user_id}
     if file_id:
@@ -80,7 +129,7 @@ def format_docs_with_aliases(docs: list[dict]) -> str:
         formatted.append(f"[DOC {i}] {clean_text}")
     return "\n\n".join(formatted)
 
-# --- 2. STRICT Citation Validation ---
+# --- 3. STRICT Citation Validation ---
 
 def validate_answer_citations(answer: str, retrieved_docs: list[dict], mode: str = "general") -> tuple[bool, dict]:
     """
@@ -126,7 +175,7 @@ def validate_answer_citations(answer: str, retrieved_docs: list[dict], mode: str
             return False, citation_val
         return True, citation_val
 
-# --- 3. Main RAG Pipeline ---
+# --- 4. Main RAG Pipeline ---
 
 async def answer_query(
     query: str, 
@@ -142,8 +191,8 @@ async def answer_query(
     total_start_time = time.time()
     llm = get_llm()
     
-    # 1. Retrieval Step
-    retrieved_docs, retrieval_time, scores = retrieve_with_scores(query, user_id, file_id, mode, top_k=6)
+    # 1. Retrieval Step (Async)
+    retrieved_docs, retrieval_time, scores = await retrieve_with_scores(query, user_id, file_id, mode, top_k=6)
     
     # Generate simple aliases: 0, 1, 2...
     # And a map to get back to real UUIDs: {'0': 'uuid-123...', '1': 'uuid-456...'}
@@ -225,6 +274,15 @@ async def answer_query(
     # 7. Metrics
     conf = calculate_confidence(query, retrieved_docs, answer_text_real, citation_val)
     total_time = time.time() - total_start_time
+    
+    # --- 🚨 DEEP EVALUATION ---
+    eval_metrics = evaluator.evaluate_query(
+        question=query,
+        answer=answer_text_real,
+        context=context_str,
+        retrieved_docs=retrieved_docs,
+        response_time=total_time
+    )
 
     metrics = {
         "processing_time_total": round(total_time, 3),
@@ -239,7 +297,9 @@ async def answer_query(
         "confidence_category": conf["confidence_category"],
         "confidence_score": conf["confidence_score"],
         "hallucination_risk": "Low" if citation_val.get("coverage", 0) > 0.7 else "Potential",
-        "citation_validation": citation_val
+        "citation_validation": citation_val,
+        # Include deep evaluation
+        "evaluation": eval_metrics
     }
     
     return {
@@ -332,6 +392,6 @@ QUESTION: {{query}}
 ANSWER:"""
 
 # --- Backward Compatibility Wrapper ---
-def retrieve_docs(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
-    docs, _, _ = retrieve_with_scores(query, user_id, file_id, mode, top_k)
+async def retrieve_docs(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
+    docs, _, _ = await retrieve_with_scores(query, user_id, file_id, mode, top_k)
     return docs

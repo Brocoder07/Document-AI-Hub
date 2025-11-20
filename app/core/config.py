@@ -17,11 +17,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # AI Models
-    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_MODEL: str = "sentence-transformers/all-mpnet-base-v2"
     
     # Groq Configuration (now from .env)
     GROQ_API_KEY: str = Field(..., env="GROQ_API_KEY")
-    GROQ_MODEL: str = Field(default="llama3-8b-8192", env="GROQ_MODEL")
+    GROQ_MODEL: str = Field(default="llama-3.1-8b-instant", env="GROQ_MODEL")
 
     # ChromaDB
     CHROMA_PERSIST_DIR: str = "data/embeddings/chroma_db"
