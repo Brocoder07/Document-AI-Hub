@@ -8,13 +8,12 @@ from langchain.prompts import ChatPromptTemplate, PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough, RunnableParallel
 import time
 import logging
+import re
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# --- 1. STRICT PROMPTS with CITATION EXAMPLES ---
-# (PROMPT_TEMPLATES dict remains, but logic is overridden by dynamic builder below)
-
-# --- 2. Retrieval Logic with Scoring ---
+# --- 1. Retrieval Logic with Scoring ---
 
 def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
     """
@@ -27,7 +26,8 @@ def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, m
         "healthcare": "medical_docs",
         "academic": "academic_docs",
         "finance": "finance_docs",
-        "business": "general_docs",
+        # FIX: Now points to the dedicated 'business_docs' collection
+        "business": "business_docs",
         "general": "general_docs" 
     }
     target_collection = collection_map.get(mode, "general_docs")
@@ -68,25 +68,28 @@ def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, m
             
     return results, retrieval_time, scores
 
-def format_docs(docs: list[dict]) -> str:
-    return "\n\n---\n\n".join([d["text"] for d in docs])
+def format_docs_with_aliases(docs: list[dict]) -> str:
+    """
+    Formats documents with simple aliases [DOC 0], [DOC 1] instead of full UUIDs.
+    This helps the LLM distinguish between content numbers and citation IDs.
+    """
+    formatted = []
+    for i, d in enumerate(docs):
+        # Clean text to remove newlines for cleaner prompt context
+        clean_text = d["text"].replace("\n", " ")
+        formatted.append(f"[DOC {i}] {clean_text}")
+    return "\n\n".join(formatted)
 
-# --- 3. STRICT Citation Validation (FIXED) ---
+# --- 2. STRICT Citation Validation ---
 
 def validate_answer_citations(answer: str, retrieved_docs: list[dict], mode: str = "general") -> tuple[bool, dict]:
     """
     Validates that answers are properly cited.
-    Different modes have different strictness levels.
-    Returns: (is_valid, validation_details)
     """
     citation_val = validate_citations(answer, retrieved_docs)
     
     logger.debug(f"Citation validation - Mode: {mode}")
-    logger.debug(f"  Total citations found: {citation_val.get('total_citations', 0)}")
-    logger.debug(f"  Valid citations: {citation_val.get('valid_citations', 0)}")
-    logger.debug(f"  Coverage: {citation_val.get('coverage', 0):.2%}")
     
-    # --- FIX: Smarter Refusal Detection ---
     refusal_phrases = [
         "i could not find the answer",
         "i cannot find",
@@ -94,59 +97,46 @@ def validate_answer_citations(answer: str, retrieved_docs: list[dict], mode: str
         "not found in the provided documents"
     ]
     
-    # Check if answer STARTS with a refusal phrase (ignoring case/whitespace)
     ans_lower = answer.lower().strip()
     is_refusal_text = any(ans_lower.startswith(phrase) for phrase in refusal_phrases)
     
     valid_cites = citation_val.get("valid_citations", 0)
+    total_cites = citation_val.get("total_citations", 0)
 
-    # Only consider it a "Refusal" if there are NO valid citations.
-    # This allows "Mixed Refusals" (e.g., "I couldn't find X, but here is Y [DOC 1]") to pass.
+    # Logic: If it looks like a refusal BUT has 0 citations, it's valid. 
+    # If it has citations, we ignore the refusal text and validate the citations.
     if is_refusal_text and valid_cites == 0:
         logger.info("Answer is a refusal (and has no citations) - marking as valid")
         return True, citation_val
     
-    # If it's a substantive answer (even if it hedged), check citations
-    total_cites = citation_val.get("total_citations", 0)
-    
-    # Academic mode: STRICT - require at least 1 citation, then check coverage
     if mode == "academic":
         if total_cites == 0:
-            logger.warning("Academic mode: NO citations found in answer - INVALID")
             return False, citation_val
-        
         coverage = citation_val.get("coverage", 0)
         if coverage < 0.75:
-            logger.warning(f"Academic mode: Citation coverage {coverage:.2%} < 0.75 - INVALID")
             return False, citation_val
-        
-        logger.info(f"Academic mode: Valid answer with {total_cites} citations, coverage {coverage:.2%}")
         return True, citation_val
     
-    # Other modes: LENIENT - accept if LLM attempted citations
     else:
         if total_cites == 0:
-            logger.warning(f"{mode} mode: NO citations found in answer - INVALID")
             return False, citation_val
-        
-        # LENIENT: If LLM generated citations AND at least 1 is valid, accept
         if valid_cites >= 1:
-            logger.info(f"{mode} mode: Valid answer with {valid_cites}/{total_cites} valid citations (coverage {citation_val.get('coverage', 0):.2%})")
             return True, citation_val
-        
-        # Stricter: If ALL citations are invalid, reject
         if total_cites > 0 and valid_cites == 0:
-            logger.warning(f"{mode} mode: LLM generated {total_cites} citations but ALL are invalid - INVALID")
             return False, citation_val
-        
         return True, citation_val
 
-# --- 4. Main RAG Pipeline ---
+# --- 3. Main RAG Pipeline ---
 
-async def answer_query(query: str, user_id: str, file_id: str | None = None, mode: str = "general"):
+async def answer_query(
+    query: str, 
+    user_id: str, 
+    file_id: str | None = None, 
+    mode: str = "general",
+    chat_history: str = ""
+):
     """
-    STRICT RAG pipeline: evidence-only, citation-enforced, validation-checked.
-    Prompts are dynamically built with actual doc IDs for citation examples.
+    STRICT RAG pipeline with Chat History support.
     Returns Answer + Rich Metrics.
     """
     total_start_time = time.time()
@@ -154,15 +144,19 @@ async def answer_query(query: str, user_id: str, file_id: str | None = None, mod
     
     # 1. Retrieval Step
     retrieved_docs, retrieval_time, scores = retrieve_with_scores(query, user_id, file_id, mode, top_k=6)
-    context_str = format_docs(retrieved_docs)
+    
+    # Generate simple aliases: 0, 1, 2...
+    # And a map to get back to real UUIDs: {'0': 'uuid-123...', '1': 'uuid-456...'}
+    doc_id_map = {str(i): doc["id"] for i, doc in enumerate(retrieved_docs)}
+    
+    # Format context using these aliases
+    context_str = format_docs_with_aliases(retrieved_docs)
     
     avg_similarity = sum(scores) / len(scores) if scores else 0.0
+    logger.info(f"RAG Query - Mode: {mode}, Retrieved: {len(retrieved_docs)} docs")
     
-    logger.info(f"RAG Query - Mode: {mode}, Retrieved: {len(retrieved_docs)} docs, Avg similarity: {avg_similarity:.3f}")
-    
-    # 2. Mode Policy Check (Require documents)
+    # 2. Mode Policy Check
     if not retrieved_docs:
-        logger.info("No documents retrieved - returning refusal")
         return {
             "answer": "I could not find the answer in the provided documents.",
             "retrieved": [],
@@ -174,225 +168,161 @@ async def answer_query(query: str, user_id: str, file_id: str | None = None, mod
                 "similarity_score": 0,
                 "confidence_category": "Low",
                 "confidence_score": 0,
-                "hallucination_risk": "Potential"
+                "hallucination_risk": "Potential",
+                "citation_validation": {}
             }
         }
 
-    # 3. Generation Step - Build Dynamic Prompt with Actual Doc IDs
-    template = _build_dynamic_prompt(mode, retrieved_docs)
+    # 3. Generation Step - Build Prompt with Aliased IDs (0, 1, 2)
+    aliased_indices = list(doc_id_map.keys())
+    template = _build_dynamic_prompt(mode, aliased_indices, chat_history)
     rag_prompt = PromptTemplate.from_template(template)
     
     chain = rag_prompt | llm
     
     gen_start_time = time.time()
-    ai_message = await chain.ainvoke({"context": context_str, "query": query})
+    
+    ai_message = await chain.ainvoke({
+        "context": context_str, 
+        "query": query,
+        "history": chat_history 
+    })
     gen_time = time.time() - gen_start_time
     
-    # 4. Extract answer and metrics
-    answer_text = ai_message.content
+    # 4. Extract answer
+    answer_text_aliased = ai_message.content
     meta = ai_message.response_metadata
-    token_usage = meta.get("token_usage", {})
+    raw_usage = meta.get("token_usage", {})
     
-    input_tokens = token_usage.get("prompt_tokens", 0)
-    output_tokens = token_usage.get("completion_tokens", 0)
-    total_tokens = token_usage.get("total_tokens", 0)
+    # 5. ID REPLACEMENT (Robust Swap: [DOC 0, 2] -> [DOC uuid1] [DOC uuid2])
+    def replace_alias_in_match(match):
+        full_tag = match.group(0)
+        # Extract all integers from the tag (handles "1, 3", "1, DOC 3", etc.)
+        numbers = re.findall(r'\d+', full_tag)
+        
+        real_ids = []
+        for num in numbers:
+            if num in doc_id_map:
+                real_ids.append(doc_id_map[num])
+        
+        if not real_ids:
+            return full_tag # Return original if no valid map found
+            
+        # Return as separate standard citations
+        return " ".join([f"[DOC {rid}]" for rid in real_ids])
+
+    # Match any bracket that starts with DOC and contains text/numbers until closing bracket
+    answer_text_real = re.sub(r"\[DOC\s+[^\]]+\]", replace_alias_in_match, answer_text_aliased, flags=re.IGNORECASE)
     
-    logger.debug(f"LLM generated {output_tokens} tokens. Answer preview: {answer_text[:100]}...")
-    
-    # 5. STRICT VALIDATION: Check citations (with mode-aware logic)
-    is_valid, citation_val = validate_answer_citations(answer_text, retrieved_docs, mode)
+    # 6. VALIDATION (Check against real UUIDs)
+    is_valid, citation_val = validate_answer_citations(answer_text_real, retrieved_docs, mode)
     
     if not is_valid:
-        logger.warning(f"Answer validation FAILED for {mode} mode. Total citations: {citation_val.get('total_citations', 0)}, Coverage: {citation_val.get('coverage', 0)}")
-        logger.warning(f"Rejected answer preview: {answer_text[:150]}...")
-        
-        answer_text = "I could not find the answer in the provided documents."
+        logger.warning(f"Validation Failed. Mode: {mode}")
+        answer_text_real = "I could not find the answer in the provided documents."
         citation_val["coverage"] = 0.0
     
-    # 6. Calculate improved confidence using multi-factor heuristic
-    conf = calculate_confidence(query, retrieved_docs, answer_text, citation_val)
-    
+    # 7. Metrics
+    conf = calculate_confidence(query, retrieved_docs, answer_text_real, citation_val)
     total_time = time.time() - total_start_time
 
-    # 7. Metrics Object
     metrics = {
         "processing_time_total": round(total_time, 3),
         "retrieval_time": round(retrieval_time, 3),
         "generation_time": round(gen_time, 3),
         "token_usage": {
-            "input": input_tokens,
-            "output": output_tokens,
-            "total": total_tokens
+            "input": raw_usage.get("prompt_tokens", 0),
+            "output": raw_usage.get("completion_tokens", 0),
+            "total": raw_usage.get("total_tokens", 0)
         },
         "similarity_score": round(avg_similarity, 3),
         "confidence_category": conf["confidence_category"],
         "confidence_score": conf["confidence_score"],
         "hallucination_risk": "Low" if citation_val.get("coverage", 0) > 0.7 else "Potential",
-        "citation_validation": {
-            "total_citations": citation_val.get("total_citations", 0),
-            "valid_citations": citation_val.get("valid_citations", 0),
-            "coverage": round(citation_val.get("coverage", 0), 2)
-        }
+        "citation_validation": citation_val
     }
     
     return {
-        "answer": answer_text, 
+        "answer": answer_text_real, 
         "retrieved": retrieved_docs,
         "metrics": metrics
     }
 
-# --- Dynamic Prompt Builder ---
+# --- Dynamic Prompt Builder (Updated for Simple Aliases) ---
 
-def _build_dynamic_prompt(mode: str, retrieved_docs: list[dict]) -> str:
+def _build_dynamic_prompt(mode: str, aliased_ids: list[str], chat_history: str) -> str:
     """
-    Builds mode-specific prompt with ACTUAL doc IDs from retrieved documents.
+    Builds prompt using simple ID aliases (0, 1, 2) instead of complex UUIDs.
     """
     
-    # Extract ALL actual doc IDs
-    doc_ids = [doc["id"] for doc in retrieved_docs]
-    doc_ids_str = ", ".join(doc_ids)
+    ids_str = ", ".join([f"[DOC {i}]" for i in aliased_ids])
     
+    history_block = ""
+    if chat_history:
+        history_block = f"""
+PREVIOUS CONVERSATION HISTORY:
+{{history}}
+(Use this history to understand context, but your facts MUST come from the documents below)
+"""
+
+    # Base instruction
     if mode == "academic":
-        return f"""You are a rigorous academic researcher. Explain concepts STRICTLY from the provided scholarly materials.
+        role_desc = "You are a rigorous academic researcher. Explain concepts STRICTLY from the provided scholarly materials."
+        mode_rules = """
+5. WARNING: Do NOT use page numbers or slide numbers (e.g., "Slide 28") as citations. ONLY use the exact strings listed in "ALLOWED SOURCES".
+6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
+"""
+    elif mode == "legal":
+        role_desc = "You are a legal analysis expert. Analyze the provided legal documents STRICTLY."
+        mode_rules = """
+4. WARNING: Do NOT use Section numbers, Clause numbers, or Article numbers (e.g., "Section 5") as citation IDs.
+5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
+6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
+"""
+    elif mode == "finance":
+        role_desc = "You are a financial analyst. Interpret financial documents STRICTLY."
+        mode_rules = """
+4. WARNING: Do NOT use Line numbers or Row numbers as citation IDs.
+5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
+6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
+"""
+    elif mode == "healthcare":
+        role_desc = "You are a medical information specialist. Extract patient information STRICTLY."
+        mode_rules = """
+4. WARNING: Do NOT use Patient IDs or Record numbers as citation IDs.
+5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
+6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
+"""
+    elif mode == "business":
+        role_desc = "You are a business operations analyst. Analyze business documents STRICTLY."
+        mode_rules = """
+4. WARNING: Do NOT use Agenda item numbers or List numbers as citation IDs.
+5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
+6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
+"""
+    else:
+        role_desc = "You are a helpful assistant. Answer using ONLY the provided documents."
+        mode_rules = '4. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."'
 
+    # Rules modified to focus on the simple [DOC X] format
+    common_rules = f"""
 ⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
-YOU MUST FOLLOW THIS OR YOUR RESPONSE WILL BE REJECTED:
+You are provided with document chunks labeled [DOC 0], [DOC 1], etc.
 
-ALLOWED DOC IDS (ONLY these IDs exist in the provided documents):
-{doc_ids_str}
+ALLOWED SOURCES (ONLY):
+{ids_str}
 
 RULES:
 1. Use ONLY information from the provided documents.
-2. For EVERY factual claim, cite EXACTLY ONE of the allowed doc IDs above.
-3. Citation format: [DOC 7a0e43c6-4e1d-44c2-9fed-447bf1981204_XX] where XX is from the ALLOWED list.
-4. Example CORRECT citation: [DOC {doc_ids[0]}]
-5. If you cite an ID not in the ALLOWED list, your answer will be REJECTED.
-6. Use exact terminology from documents (e.g., "vector" not "array").
-7. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
-8. Structure: Definition, Key Components, Architecture, Examples, Applications.
+2. For EVERY factual claim, cite the source using the [DOC X] format.
+3. Example: "The clause specifies a 30-day notice [DOC 0]."
+{mode_rules}
+"""
 
-REMEMBER: Only cite IDs from this list:
-{doc_ids_str}
+    return f"""{role_desc}
+{common_rules}
 
-CONTEXT:
-{{context}}
-
-ACADEMIC QUESTION: {{query}}
-
-EXPLANATION:"""
-    
-    elif mode == "legal":
-        return f"""You are a legal analysis expert. Analyze the provided legal documents STRICTLY.
-
-⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
-
-ALLOWED DOC IDS (ONLY):
-{doc_ids_str}
-
-RULES:
-1. Extract legal clauses EXACTLY as stated.
-2. Cite [DOC allowed_id_from_above] for EVERY legal point.
-3. ONLY cite IDs from the allowed list above.
-4. If you cite an ID not in the list, your answer WILL BE REJECTED.
-5. Highlight risks ONLY if explicitly in documents.
-6. If not in documents, say: "I could not find the answer in the provided documents."
-
-CONTEXT:
-{{context}}
-
-LEGAL QUESTION: {{query}}
-
-ANALYSIS:"""
-    
-    elif mode == "finance":
-        return f"""You are a financial analyst. Interpret financial documents STRICTLY.
-
-⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
-
-ALLOWED DOC IDS (ONLY):
-{doc_ids_str}
-
-RULES:
-1. Report financial figures EXACTLY as stated.
-2. Cite [DOC allowed_id] for EVERY number or metric.
-3. ONLY cite IDs from the list above.
-4. Do NOT invent doc IDs.
-5. Provide context for each figure.
-6. If missing, say: "I could not find the answer in the provided documents."
-
-CONTEXT:
-{{context}}
-
-FINANCIAL QUESTION: {{query}}
-
-ANALYSIS:"""
-    
-    elif mode == "healthcare":
-        return f"""You are a medical information specialist. Extract patient information STRICTLY.
-
-⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
-
-ALLOWED DOC IDS (ONLY):
-{doc_ids_str}
-
-RULES:
-1. Summarize ONLY what is explicitly stated.
-2. Cite [DOC allowed_id] for EVERY fact.
-3. ONLY cite IDs from the list above.
-4. Do NOT cite IDs outside this list.
-5. No medical advice or diagnosis.
-6. If missing, say: "I could not find the answer in the provided documents."
-
-CONTEXT:
-{{context}}
-
-HEALTHCARE QUESTION: {{query}}
-
-SUMMARY:"""
-    
-    elif mode == "business":
-        return f"""You are a business operations analyst. Analyze business documents STRICTLY.
-
-⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
-
-ALLOWED DOC IDS (ONLY):
-{doc_ids_str}
-
-RULES:
-1. Extract action items, decisions, deadlines as documented.
-2. Cite [DOC allowed_id] for EACH fact.
-3. ONLY cite IDs from the list above.
-4. Identify responsible owners.
-5. If incomplete, say: "I could not find the answer in the provided documents."
-
-CONTEXT:
-{{context}}
-
-BUSINESS QUESTION: {{query}}
-
-REPORT:"""
-    
-    else:  # general mode - NOW WITH STRICT FORMAT
-        return f"""You are a helpful assistant. Answer using ONLY the provided documents.
-
-⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
-YOU MUST FOLLOW THIS OR YOUR RESPONSE WILL BE REJECTED:
-
-ALLOWED DOC IDS (ONLY these IDs exist in the provided documents):
-{doc_ids_str}
-
-RULES:
-1. Base answer ONLY on provided context.
-2. Cite [DOC allowed_id] for EVERY factual claim.
-3. Citation format: [DOC {doc_ids[0]}] (exact format shown here).
-4. ONLY cite IDs from the list above.
-5. Example CORRECT citation: "The laptop is a Dell XPS13 [DOC {doc_ids[0]}]"
-6. Example WRONG citation: "[{doc_ids[0]}]" or "({doc_ids[0]})" - DO NOT DO THIS
-7. If you cite any ID not in the ALLOWED list, your answer will be REJECTED.
-8. If information is missing, say: "I could not find the answer in the provided documents."
-
-REMEMBER: Only cite IDs from this list:
-{doc_ids_str}
+{history_block}
 
 CONTEXT:
 {{context}}

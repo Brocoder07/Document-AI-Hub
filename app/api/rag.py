@@ -2,8 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from enum import Enum
 from typing import Optional, List
+from sqlalchemy.orm import Session
+
 from app.api.dependencies import get_current_active_user, UserInDB
+from app.db.session import get_db
 from app.services.rag_service import answer_query
+# Ensure app/services/chat_service.py exists as discussed
+from app.services import chat_service  
 from app.core.limiter import limiter 
 
 router = APIRouter()
@@ -22,12 +27,13 @@ class RagQueryRequest(BaseModel):
     query: str
     file_id: str | None = None
     mode: QueryMode = QueryMode.general
+    session_id: str | None = None # <--- New Field for Chat History
 
 class RetrievedDoc(BaseModel):
     id: str
     text: str
     meta: dict
-    score: float # Added score field
+    score: float
 
 class TokenMetrics(BaseModel):
     input: int
@@ -43,17 +49,16 @@ class RagMetrics(BaseModel):
     confidence_category: str
     confidence_score: float
     hallucination_risk: str
+    citation_validation: dict
 
 class RagResponse(BaseModel):
     answer: str
     retrieved: list[RetrievedDoc]
-    metrics: RagMetrics # Added metrics field
+    metrics: RagMetrics
+    session_id: str # <--- Return ID to frontend
 
 # --- 3. Helper: RBAC Logic ---
 def check_mode_permission(user: UserInDB, mode: QueryMode):
-    """
-    Verifies if the current user has the required role for the selected mode.
-    """
     permissions = {
         QueryMode.legal: ["lawyer"],
         QueryMode.healthcare: ["doctor"],
@@ -73,11 +78,12 @@ def check_mode_permission(user: UserInDB, mode: QueryMode):
 
 # --- 4. Endpoint ---
 @router.post("/answer", response_model=RagResponse)
-@limiter.limit("5/minute") 
+@limiter.limit("10/minute") 
 async def get_rag_answer(
     request: Request, 
     rag_request: RagQueryRequest,
-    current_user: UserInDB = Depends(get_current_active_user)
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
 ):
     # 1. Enforce RBAC
     check_mode_permission(current_user, rag_request.mode)
@@ -85,14 +91,45 @@ async def get_rag_answer(
     try:
         user_id = current_user.email
         
-        # 2. Call the Service
+        # 2. Handle Session / Chat History
+        session_id = rag_request.session_id
+        chat_history_str = ""
+
+        if session_id:
+            # Verify session exists and belongs to user
+            session = chat_service.get_session(db, session_id, current_user.id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Chat session not found or access denied")
+            
+            # Retrieve previous context (e.g., last 6 messages)
+            chat_history_str = chat_service.get_chat_history_string(db, session_id)
+        else:
+            # Create New Session
+            # Title is just the first 30 chars of the first query
+            title = rag_request.query[:30] + "..."
+            new_session = chat_service.create_session(db, current_user.id, title=title)
+            session_id = new_session.id
+
+        # 3. Call RAG Service (Injecting History)
         result = await answer_query(
             query=rag_request.query,
             user_id=user_id,
             file_id=rag_request.file_id,
-            mode=rag_request.mode.value
+            mode=rag_request.mode.value,
+            chat_history=chat_history_str # <--- Pass history context
         )
-        return RagResponse(**result)
+        
+        # 4. Save Interaction to DB
+        chat_service.add_message(db, session_id, "user", rag_request.query)
+        chat_service.add_message(db, session_id, "assistant", result["answer"])
+
+        # 5. Return response with session_id
+        return RagResponse(
+            answer=result["answer"],
+            retrieved=result["retrieved"],
+            metrics=result["metrics"],
+            session_id=session_id
+        )
         
     except HTTPException:
         raise 

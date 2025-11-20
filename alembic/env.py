@@ -6,30 +6,30 @@ from sqlalchemy import pool
 
 from alembic import context
 
-# --- ADD THIS ---
 # Add the 'app' directory to the system path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# --- ADD THIS ---
-# Import your Base model, models, and settings
+# --- IMPORTS START HERE ---
 from app.db.base_class import Base
-from app.models.users import User # Import all your models here
+from app.models.users import User 
 from app.models.documents import Document
 from app.core.config import settings
+
+# --- ADD THIS NEW IMPORT ---
+# This registers ChatSession and ChatMessage with Base.metadata
+from app.models.chat import ChatSession, ChatMessage 
+# ---------------------------
 
 # this is the Alembic Config object
 config = context.config
 
-# --- ADD THIS ---
 # Set the database URL from your settings file
 config.set_main_option('sqlalchemy.url', settings.DATABASE_URL)
-
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# --- ADD THIS ---
 # Set the target metadata
 target_metadata = Base.metadata
 
