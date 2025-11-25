@@ -4,394 +4,199 @@ from app.core.llm import get_llm
 from app.generation.citation_enforcer import validate_citations
 from app.metrics.confidence_calculator import calculate_confidence
 from app.services.evaluator import evaluator
-
 from langchain.prompts import ChatPromptTemplate, PromptTemplate
-from langchain.schema.runnable import RunnablePassthrough, RunnableParallel
 import time
 import logging
 import re
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# --- 1. SMART RETRIEVAL HELPERS ---
+# --- HELPERS ---
 
 async def route_query(query: str) -> str:
-    """
-    Classifies query as 'general' (conceptual) or 'specific' (fact-based).
-    """
     llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a query router. Classify the following question as either 'general' (asking for concepts, summaries, high-level explanations) or 'specific' (asking for specific facts, numbers, names, clauses). Output ONLY 'general' or 'specific'."),
-        ("user", "{query}")
-    ])
-    chain = prompt | llm
     try:
-        response = await chain.ainvoke({"query": query})
-        return response.content.strip().lower()
-    except:
-        return "specific" # Default fallback
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Classify as 'general' or 'specific'."), ("user", "{query}")
+        ])
+        return (await (prompt | llm).ainvoke({"query": query})).content.strip().lower()
+    except: return "specific"
 
 async def generate_hyde_query(query: str) -> str:
-    """
-    Generates a hypothetical answer to improve retrieval for general questions.
-    """
     llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an expert assistant. Generate a short, hypothetical passage that answers the user's question perfectly. Do not include conversational filler."),
-        ("user", "{query}")
-    ])
-    chain = prompt | llm
     try:
-        response = await chain.ainvoke({"query": query})
-        return response.content.strip()
-    except:
-        return query # Fallback to original query
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Generate a hypothetical answer."), ("user", "{query}")
+        ])
+        return (await (prompt | llm).ainvoke({"query": query})).content.strip()
+    except: return query
 
-# --- 2. Retrieval Logic with Scoring ---
+def normalize_citations(text: str) -> str:
+    """
+    Robustly standardizes citations.
+    Converts: (Source 1), [Source 1], (1), [1], [Doc 1] -> [Source 1]
+    """
+    # Regex explanation:
+    # [\(\[]       -> Match either '(' or '['
+    # (?:...)?     -> Optional non-capturing group for prefix "Doc" or "Source"
+    # (\d+)        -> Capture the number (Group 1)
+    # [\)\]]       -> Match either ')' or ']'
+    return re.sub(
+        r"[\(\[](?:Doc\s?|Source\s?)?(\d+)[\)\]]", 
+        lambda m: f"[Source {m.group(1)}]", 
+        text, 
+        flags=re.IGNORECASE
+    )
 
-async def retrieve_with_scores(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
-    """
-    Retrieves documents AND their similarity scores.
-    Now supports Smart Retrieval (HyDE) when applicable.
-    """
-    start_time = time.time()
-    
-    # A. Smart Query Transformation
+# --- RETRIEVAL ---
+
+async def retrieve_with_scores(query: str, user_id: str, file_id: str | None, mode: str, top_k: int = 6):
+    start = time.time()
     search_query = query
     
-    # Only use HyDE if we are searching broadly (no specific file_id) 
-    # and the mode implies general knowledge retrieval
+    # Smart Retrieval (HyDE)
     if not file_id and mode in ["general", "academic"]:
-        query_type = await route_query(query)
-        if "general" in query_type:
-            logger.info(f"🔄 General query detected. Generating HyDE...")
-            hyde_answer = await generate_hyde_query(query)
-            search_query = hyde_answer
-            logger.info("✅ Using HyDE for retrieval.")
-            
-    # B. Standard Retrieval
-    collection_map = {
-        "legal": "legal_docs",
-        "healthcare": "medical_docs",
-        "academic": "academic_docs",
-        "finance": "finance_docs",
-        "business": "business_docs",
-        "general": "general_docs" 
-    }
-    target_collection = collection_map.get(mode, "general_docs")
-    col = get_collection(target_collection)
+        if "general" in await route_query(query):
+            search_query = await generate_hyde_query(query)
+
+    # Collection Selection
+    col_name = {
+        "legal": "legal_docs", "healthcare": "medical_docs",
+        "academic": "academic_docs", "finance": "finance_docs", 
+        "business": "business_docs"
+    }.get(mode, "general_docs")
     
+    col = get_collection(col_name)
     q_emb = embed_texts([search_query])[0]
-
-    base_filter = {"user_id": user_id}
-    if file_id:
-        where_filter = {"$and": [base_filter, {"file_id": file_id}]}
-    else:
-        where_filter = base_filter
-
-    res = col.query(
-        query_embeddings=[q_emb], 
-        n_results=top_k,
-        where=where_filter,
-        include=["documents", "metadatas", "distances"] 
-    )
     
-    retrieval_time = time.time() - start_time
+    # Filtering
+    where = {"user_id": user_id}
+    if file_id: where = {"$and": [{"user_id": user_id}, {"file_id": file_id}]}
+
+    res = col.query(query_embeddings=[q_emb], n_results=top_k, where=where, include=["documents", "metadatas", "distances"])
+    
     results = []
-    
     scores = []
-
     if res["documents"]:
         for i in range(len(res["documents"][0])):
-            dist = res["distances"][0][i]
-            sim_score = max(0, 1.0 - dist) 
-            scores.append(sim_score)
-            
+            score = max(0, 1.0 - res["distances"][0][i])
+            scores.append(score)
             results.append({
                 "id": res["ids"][0][i],
                 "text": res["documents"][0][i],
-                "meta": res["metadatas"][0][i],
-                "score": round(sim_score, 4)
+                "metadata": res["metadatas"][0][i],
+                "score": round(score, 4)
             })
             
-    return results, retrieval_time, scores
+    return results, time.time() - start, scores
 
-def format_docs_with_aliases(docs: list[dict]) -> str:
-    """
-    Formats documents with simple aliases [DOC 0], [DOC 1] instead of full UUIDs.
-    This helps the LLM distinguish between content numbers and citation IDs.
-    """
-    formatted = []
-    for i, d in enumerate(docs):
-        # Clean text to remove newlines for cleaner prompt context
-        clean_text = d["text"].replace("\n", " ")
-        formatted.append(f"[DOC {i}] {clean_text}")
-    return "\n\n".join(formatted)
+# --- MAIN PIPELINE ---
 
-# --- 3. STRICT Citation Validation ---
-
-def validate_answer_citations(answer: str, retrieved_docs: list[dict], mode: str = "general") -> tuple[bool, dict]:
-    """
-    Validates that answers are properly cited.
-    """
-    citation_val = validate_citations(answer, retrieved_docs)
-    
-    logger.debug(f"Citation validation - Mode: {mode}")
-    
-    refusal_phrases = [
-        "i could not find the answer",
-        "i cannot find",
-        "information is not available",
-        "not found in the provided documents"
-    ]
-    
-    ans_lower = answer.lower().strip()
-    is_refusal_text = any(ans_lower.startswith(phrase) for phrase in refusal_phrases)
-    
-    valid_cites = citation_val.get("valid_citations", 0)
-    total_cites = citation_val.get("total_citations", 0)
-
-    # Logic: If it looks like a refusal BUT has 0 citations, it's valid. 
-    # If it has citations, we ignore the refusal text and validate the citations.
-    if is_refusal_text and valid_cites == 0:
-        logger.info("Answer is a refusal (and has no citations) - marking as valid")
-        return True, citation_val
-    
-    if mode == "academic":
-        if total_cites == 0:
-            return False, citation_val
-        coverage = citation_val.get("coverage", 0)
-        if coverage < 0.75:
-            return False, citation_val
-        return True, citation_val
-    
-    else:
-        if total_cites == 0:
-            return False, citation_val
-        if valid_cites >= 1:
-            return True, citation_val
-        if total_cites > 0 and valid_cites == 0:
-            return False, citation_val
-        return True, citation_val
-
-# --- 4. Main RAG Pipeline ---
-
-async def answer_query(
-    query: str, 
-    user_id: str, 
-    file_id: str | None = None, 
-    mode: str = "general",
-    chat_history: str = ""
-):
-    """
-    STRICT RAG pipeline with Chat History support.
-    Returns Answer + Rich Metrics.
-    """
-    total_start_time = time.time()
+async def answer_query(query: str, user_id: str, file_id: str | None = None, mode: str = "general", chat_history: str = ""):
+    total_start = time.time()
     llm = get_llm()
     
-    # 1. Retrieval Step (Async)
-    retrieved_docs, retrieval_time, scores = await retrieve_with_scores(query, user_id, file_id, mode, top_k=6)
+    # 1. Retrieve
+    retrieved, ret_time, scores = await retrieve_with_scores(query, user_id, file_id, mode)
     
-    # Generate simple aliases: 0, 1, 2...
-    # And a map to get back to real UUIDs: {'0': 'uuid-123...', '1': 'uuid-456...'}
-    doc_id_map = {str(i): doc["id"] for i, doc in enumerate(retrieved_docs)}
-    
-    # Format context using these aliases
-    context_str = format_docs_with_aliases(retrieved_docs)
-    
-    avg_similarity = sum(scores) / len(scores) if scores else 0.0
-    logger.info(f"RAG Query - Mode: {mode}, Retrieved: {len(retrieved_docs)} docs")
-    
-    # 2. Mode Policy Check
-    if not retrieved_docs:
-        return {
-            "answer": "I could not find the answer in the provided documents.",
-            "retrieved": [],
-            "metrics": {
-                "processing_time_total": round(time.time() - total_start_time, 3),
-                "retrieval_time": round(retrieval_time, 3),
-                "generation_time": 0,
-                "token_usage": {"input": 0, "output": 0, "total": 0},
-                "similarity_score": 0,
-                "confidence_category": "Low",
-                "confidence_score": 0,
-                "hallucination_risk": "Potential",
-                "citation_validation": {}
-            }
-        }
+    if not retrieved:
+        return _empty_response(query, ret_time, total_start)
 
-    # 3. Generation Step - Build Prompt with Aliased IDs (0, 1, 2)
-    aliased_indices = list(doc_id_map.keys())
-    template = _build_dynamic_prompt(mode, aliased_indices, chat_history)
-    rag_prompt = PromptTemplate.from_template(template)
+    # 2. Context Building
+    formatted_docs = []
+    for i, d in enumerate(retrieved):
+        clean_text = d["text"].replace("\n", " ")
+        formatted_docs.append(f"[Source {i+1}] {clean_text}")
+    context_str = "\n\n".join(formatted_docs)
     
-    chain = rag_prompt | llm
-    
-    gen_start_time = time.time()
-    
-    ai_message = await chain.ainvoke({
-        "context": context_str, 
-        "query": query,
-        "history": chat_history 
-    })
-    gen_time = time.time() - gen_start_time
-    
-    # 4. Extract answer
-    answer_text_aliased = ai_message.content
-    meta = ai_message.response_metadata
-    raw_usage = meta.get("token_usage", {})
-    
-    # 5. ID REPLACEMENT (Robust Swap: [DOC 0, 2] -> [DOC uuid1] [DOC uuid2])
-    def replace_alias_in_match(match):
-        full_tag = match.group(0)
-        # Extract all integers from the tag (handles "1, 3", "1, DOC 3", etc.)
-        numbers = re.findall(r'\d+', full_tag)
-        
-        real_ids = []
-        for num in numbers:
-            if num in doc_id_map:
-                real_ids.append(doc_id_map[num])
-        
-        if not real_ids:
-            return full_tag # Return original if no valid map found
-            
-        # Return as separate standard citations
-        return " ".join([f"[DOC {rid}]" for rid in real_ids])
+    # 3. Prompting
+    source_list = ", ".join([f"[Source {i+1}]" for i in range(len(retrieved))])
+    role = "You are a helpful assistant."
+    if mode == "legal": role = "You are a legal expert."
+    elif mode == "academic": role = "You are a researcher."
 
-    # Match any bracket that starts with DOC and contains text/numbers until closing bracket
-    answer_text_real = re.sub(r"\[DOC\s+[^\]]+\]", replace_alias_in_match, answer_text_aliased, flags=re.IGNORECASE)
-    
-    # 6. VALIDATION (Check against real UUIDs)
-    is_valid, citation_val = validate_answer_citations(answer_text_real, retrieved_docs, mode)
-    
-    if not is_valid:
-        logger.warning(f"Validation Failed. Mode: {mode}")
-        answer_text_real = "I could not find the answer in the provided documents."
-        citation_val["coverage"] = 0.0
-    
-    # 7. Metrics
-    conf = calculate_confidence(query, retrieved_docs, answer_text_real, citation_val)
-    total_time = time.time() - total_start_time
-    
-    # --- 🚨 DEEP EVALUATION ---
-    eval_metrics = evaluator.evaluate_query(
-        question=query,
-        answer=answer_text_real,
-        context=context_str,
-        retrieved_docs=retrieved_docs,
-        response_time=total_time
-    )
+    prompt_str = f"""{role}
+INSTRUCTIONS:
+1. Answer using ONLY the context.
+2. Cite every claim as [Source X].
+3. If unsure, say "I cannot find the answer."
 
+AVAILABLE SOURCES:
+{source_list}
+
+HISTORY:
+{chat_history}
+
+CONTEXT:
+{context_str}
+
+QUESTION: {query}
+ANSWER:"""
+
+    # 4. Generation
+    gen_start = time.time()
+    ai_msg = await (PromptTemplate.from_template(prompt_str) | llm).ainvoke({})
+    gen_time = time.time() - gen_start
+    
+    # 5. Token Mapping
+    raw_usage = ai_msg.response_metadata.get("token_usage", {})
+    token_metrics = {
+        "input": raw_usage.get("prompt_tokens", 0),
+        "output": raw_usage.get("completion_tokens", 0),
+        "total": raw_usage.get("total_tokens", 0)
+    }
+
+    # 6. Processing Answer (Normalization)
+    # This now handles (Source 1) -> [Source 1] conversion
+    final_answer = normalize_citations(ai_msg.content)
+    
+    # 7. Validation
+    val_docs = [{"id": f"Source {i+1}", "text": d["text"]} for i, d in enumerate(retrieved)]
+    
+    # Helper to calculate validity since validate_citations only returns dict
+    citation_metrics = validate_citations(final_answer, val_docs)
+    
+    # 8. Metrics
+    conf = calculate_confidence(query, retrieved, final_answer, citation_metrics)
+    
     metrics = {
-        "processing_time_total": round(total_time, 3),
-        "retrieval_time": round(retrieval_time, 3),
+        "processing_time_total": round(time.time() - total_start, 3),
+        "retrieval_time": round(ret_time, 3),
         "generation_time": round(gen_time, 3),
-        "token_usage": {
-            "input": raw_usage.get("prompt_tokens", 0),
-            "output": raw_usage.get("completion_tokens", 0),
-            "total": raw_usage.get("total_tokens", 0)
-        },
-        "similarity_score": round(avg_similarity, 3),
+        "token_usage": token_metrics,
+        "similarity_score": round(sum(scores)/len(scores), 3) if scores else 0,
         "confidence_category": conf["confidence_category"],
         "confidence_score": conf["confidence_score"],
-        "hallucination_risk": "Low" if citation_val.get("coverage", 0) > 0.7 else "Potential",
-        "citation_validation": citation_val,
-        # Include deep evaluation
-        "evaluation": eval_metrics
+        "hallucination_risk": "Low" if citation_metrics.get("coverage", 0) > 0.6 else "Potential",
+        "citation_validation": citation_metrics
     }
     
     return {
-        "answer": answer_text_real, 
-        "retrieved": retrieved_docs,
+        "answer": final_answer,
+        "retrieved": retrieved,
         "metrics": metrics
     }
 
-# --- Dynamic Prompt Builder (Updated for Simple Aliases) ---
+def _empty_response(query, ret_time, start_time):
+    return {
+        "answer": "I could not find relevant documents.",
+        "retrieved": [],
+        "metrics": {
+            "processing_time_total": round(time.time() - start_time, 3),
+            "retrieval_time": round(ret_time, 3),
+            "generation_time": 0.0,
+            "token_usage": {"input": 0, "output": 0, "total": 0},
+            "similarity_score": 0.0,
+            "confidence_category": "Low",
+            "confidence_score": 0.0,
+            "hallucination_risk": "High",
+            "citation_validation": {},
+            "evaluation": {}
+        }
+    }
 
-def _build_dynamic_prompt(mode: str, aliased_ids: list[str], chat_history: str) -> str:
-    """
-    Builds prompt using simple ID aliases (0, 1, 2) instead of complex UUIDs.
-    """
-    
-    ids_str = ", ".join([f"[DOC {i}]" for i in aliased_ids])
-    
-    history_block = ""
-    if chat_history:
-        history_block = f"""
-PREVIOUS CONVERSATION HISTORY:
-{{history}}
-(Use this history to understand context, but your facts MUST come from the documents below)
-"""
-
-    # Base instruction
-    if mode == "academic":
-        role_desc = "You are a rigorous academic researcher. Explain concepts STRICTLY from the provided scholarly materials."
-        mode_rules = """
-5. WARNING: Do NOT use page numbers or slide numbers (e.g., "Slide 28") as citations. ONLY use the exact strings listed in "ALLOWED SOURCES".
-6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
-"""
-    elif mode == "legal":
-        role_desc = "You are a legal analysis expert. Analyze the provided legal documents STRICTLY."
-        mode_rules = """
-4. WARNING: Do NOT use Section numbers, Clause numbers, or Article numbers (e.g., "Section 5") as citation IDs.
-5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
-6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
-"""
-    elif mode == "finance":
-        role_desc = "You are a financial analyst. Interpret financial documents STRICTLY."
-        mode_rules = """
-4. WARNING: Do NOT use Line numbers or Row numbers as citation IDs.
-5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
-6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
-"""
-    elif mode == "healthcare":
-        role_desc = "You are a medical information specialist. Extract patient information STRICTLY."
-        mode_rules = """
-4. WARNING: Do NOT use Patient IDs or Record numbers as citation IDs.
-5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
-6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
-"""
-    elif mode == "business":
-        role_desc = "You are a business operations analyst. Analyze business documents STRICTLY."
-        mode_rules = """
-4. WARNING: Do NOT use Agenda item numbers or List numbers as citation IDs.
-5. ONLY use the [DOC X] format aliases provided in "ALLOWED SOURCES".
-6. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."
-"""
-    else:
-        role_desc = "You are a helpful assistant. Answer using ONLY the provided documents."
-        mode_rules = '4. If the answer cannot be inferred from the documents, say: "I could not find the answer in the provided documents."'
-
-    # Rules modified to focus on the simple [DOC X] format
-    common_rules = f"""
-⚠️ CRITICAL SECURITY INSTRUCTION ⚠️
-You are provided with document chunks labeled [DOC 0], [DOC 1], etc.
-
-ALLOWED SOURCES (ONLY):
-{ids_str}
-
-RULES:
-1. Use ONLY information from the provided documents.
-2. For EVERY factual claim, cite the source using the [DOC X] format.
-3. Example: "The clause specifies a 30-day notice [DOC 0]."
-{mode_rules}
-"""
-
-    return f"""{role_desc}
-{common_rules}
-
-{history_block}
-
-CONTEXT:
-{{context}}
-
-QUESTION: {{query}}
-
-ANSWER:"""
-
-# --- Backward Compatibility Wrapper ---
-async def retrieve_docs(query: str, user_id: str, file_id: str | None = None, mode: str = "general", top_k: int = 6):
-    docs, _, _ = await retrieve_with_scores(query, user_id, file_id, mode, top_k)
-    return docs
+# Compat wrapper
+async def retrieve_docs(query, user_id, file_id=None, mode="general", top_k=6):
+    d, _, _ = await retrieve_with_scores(query, user_id, file_id, mode, top_k)
+    return d

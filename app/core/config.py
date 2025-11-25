@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
+    # Message Encryption Key
+    MESSAGE_ENCRYPTION_KEY: str = Field(..., env="MESSAGE_ENCRYPTION_KEY")
+
     # AI Models
     EMBEDDING_MODEL: str = "sentence-transformers/all-mpnet-base-v2"
     

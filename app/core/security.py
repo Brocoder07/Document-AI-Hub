@@ -3,6 +3,7 @@ from jwt import PyJWTError
 from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, ValidationError
+from cryptography.fernet import Fernet
 from typing import Any # <-- 1. IMPORT 'Any'
 
 from app.core.config import settings
@@ -14,6 +15,8 @@ pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 class TokenPayload(BaseModel):
     sub: str | None = None
     exp: int | None = None
+
+cipher_suite = Fernet(settings.MESSAGE_ENCRYPTION_KEY)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verifies a plain password against a hashed one."""
@@ -60,3 +63,24 @@ def decode_token(token: str) -> TokenPayload | None:
         return None # Invalid token
     
     return token_data
+
+def encrypt_message(plain_text: str) -> str:
+    """Encrypts raw text into a Fernet token string."""
+    if not plain_text:
+        return ""
+    # Fernet encrypt expects bytes, returns bytes. We decode back to str for DB storage.
+    return cipher_suite.encrypt(plain_text.encode('utf-8')).decode('utf-8')
+
+def decrypt_message(cipher_text: str) -> str:
+    """
+    Decrypts a Fernet token string back to raw text.
+    Handles legacy (unencrypted) data gracefully.
+    """
+    if not cipher_text:
+        return ""
+    try:
+        # Try to decrypt
+        return cipher_suite.decrypt(cipher_text.encode('utf-8')).decode('utf-8')
+    except Exception:
+        # Fallback: If decryption fails, assume it's old unencrypted text
+        return cipher_text
