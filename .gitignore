@@ -43,7 +43,6 @@ desktop.ini
 # Model / Embedding Storage
 # (These files are huge — DO NOT commit)
 # ---------------------------
-models/
 data/embeddings/
 data/embeddings/chroma_db/
 data/chroma/
