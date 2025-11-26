@@ -151,8 +151,12 @@ class APIClient:
         except Exception as e: return self._handle_error(e)
 
     # --- RAG & HISTORY ---
-    def query_rag(self, query, token, mode="general", file_id=None, session_id=None):
-        payload = {"query": query, "mode": mode, "session_id": session_id}
+    def query_rag(self, query, token, file_id=None, session_id=None):
+        """
+        UPDATED: Removed 'mode' parameter entirely.
+        The backend now determines the mode based on the user's role.
+        """
+        payload = {"query": query, "session_id": session_id}
         if file_id: payload["file_id"] = file_id
         try:
             res = requests.post(f"{self.base_url}/rag/answer", json=payload, headers=self._headers(token), timeout=60)
@@ -175,9 +179,6 @@ class APIClient:
         except: return []
 
     def update_chat_title(self, session_id: str, new_title: str, token: str):
-        """
-        Update the title of a chat session.
-        """
         try:
             res = requests.patch(
                 f"{self.base_url}/rag/history/{session_id}/title",
@@ -190,9 +191,6 @@ class APIClient:
             return self._handle_error(e)
 
     def delete_chat_session(self, session_id: str, token: str):
-        """
-        Delete a chat session and all its messages.
-        """
         try:
             res = requests.delete(
                 f"{self.base_url}/rag/history/{session_id}",

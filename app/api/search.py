@@ -1,63 +1,62 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from app.api.dependencies import get_current_active_user, UserInDB
-from app.services.rag_service import retrieve_with_scores 
-from typing import Dict, Any
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import List
+from app.api.dependencies import get_current_active_user
+from app.services import embedding_service
+from app.api.chroma_client import get_collection 
 
 router = APIRouter()
 
-# --- Pydantic Schemas ---
+# SENIOR ENG FIX: Changed collection name from "documents" to "general_docs"
+# to match what is defined in file_processing_service.py
+collection = get_collection("general_docs")
 
-class SearchQueryRequest(BaseModel):
+class SearchRequest(BaseModel):
     query: str
-    top_k: int = Field(default=3, gt=0, le=10)
-    mode: str = "general" 
+    top_k: int = 5
 
-class RetrievedDoc(BaseModel):
-    document_id: str 
+class SearchResult(BaseModel):
+    id: str
+    text: str
+    metadata: dict = {}
     score: float
-    metadata: Dict[str, Any] # <--- NEW FIELD
 
-class SearchResponse(BaseModel):
-    results: list[RetrievedDoc]
-
-# --- Endpoints ---
-
-@router.post("/similarity", response_model=SearchResponse)
-def search_similar_documents(
-    request: SearchQueryRequest,
-    current_user: UserInDB = Depends(get_current_active_user)
+@router.post("/similarity", response_model=List[SearchResult])
+def similarity_search(
+    request: SearchRequest,
+    current_user = Depends(get_current_active_user)
 ):
     """
-    Performs a vector similarity search on the user's documents.
-    Returns document IDs, scores, and METADATA (filename, etc.).
+    Perform a vector similarity search on the 'general_docs' collection.
     """
     try:
-        user_id = current_user.email
+        # 1. Generate Embedding
+        query_embedding = embedding_service.generate_embedding(request.query)
         
-        # retrieve_with_scores returns: (results, retrieval_time, scores)
-        results_list, _, _ = retrieve_with_scores(
-            query=request.query,
-            user_id=user_id,
-            file_id=None, 
-            mode=request.mode, 
-            top_k=request.top_k
+        # 2. Query Vector DB (Chroma)
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=request.top_k,
+            include=["metadatas", "documents", "distances"]
         )
         
-        # Format for the pydantic response
-        formatted_results = [
-            RetrievedDoc(
-                document_id=doc["id"], 
-                score=doc["score"],
-                metadata=doc["meta"] # <--- Pass metadata to response
-            ) 
-            for doc in results_list
-        ]
-        
-        return SearchResponse(results=formatted_results)
-        
+        # 3. Format Results
+        formatted_results = []
+        if results and results['ids']:
+            ids = results['ids'][0]
+            docs = results['documents'][0]
+            metas = results['metadatas'][0]
+            dists = results['distances'][0] if 'distances' in results else [0.0]*len(ids)
+            
+            for i in range(len(ids)):
+                formatted_results.append(SearchResult(
+                    id=ids[i],
+                    text=docs[i],
+                    metadata=metas[i] if metas[i] else {},
+                    score=dists[i]
+                ))
+                
+        return formatted_results
+
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during search: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))

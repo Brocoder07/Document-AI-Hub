@@ -15,7 +15,7 @@ def get_user_by_id(db: Session, user_id: int) -> User | None:
 def create_user(db: Session, user_data: dict) -> User:
     """
     Creates a new user.
-    Strictly enforces role validation.
+    Strictly enforces role validation for business domain roles.
     """
     if len(user_data["password"].encode('utf-8')) > 72:
         raise ValueError("Password exceeds maximum length of 72 bytes.")
@@ -25,12 +25,22 @@ def create_user(db: Session, user_data: dict) -> User:
     # 1. Get requested role
     requested_role = user_data.get("role")
     if not requested_role:
-        raise ValueError("Role is required. You must specify if you are a student, lawyer, doctor, etc.")
+        raise ValueError("Role is required. You must specify your profession.")
     
-    # 2. Validate Role Whitelist (REMOVED "admin" from this list)
-    valid_roles = ["student", "researcher", "lawyer", "doctor", "banker", "employee"]
+    # 2. Validate Role Whitelist (UPDATED)
+    # Accepts exact string matches from frontend, case-insensitive
+    requested_role_lower = requested_role.lower()
+    valid_roles = [
+        "student", 
+        "researcher", 
+        "lawyer", 
+        "doctor", 
+        "banker", 
+        "employee", 
+        "business man"
+    ]
     
-    if requested_role not in valid_roles:
+    if requested_role_lower not in valid_roles:
         raise ValueError(f"Invalid role '{requested_role}'. Allowed roles: {', '.join(valid_roles)}")
 
     db_user = User(
@@ -39,7 +49,8 @@ def create_user(db: Session, user_data: dict) -> User:
         full_name=user_data.get("full_name"),
         hashed_password=hashed_password,
         is_active=True,
-        role=requested_role
+        # Store standardized lowercase role in DB
+        role=requested_role_lower
     )
     
     db.add(db_user)

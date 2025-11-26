@@ -1,10 +1,13 @@
 # Web / API
-fastapi==0.109.2
-uvicorn[standard]==0.27.1
-python-multipart==0.0.6
-streamlit==1.28.0
-python-dotenv==1.0.0
-slowapi==0.1.9
+fastapi>=0.109.2
+uvicorn[standard]>=0.27.1
+python-multipart>=0.0.9  # Bumped for security fixes
+streamlit>=1.32.2        # 1.32.2 fixed critical CPU bugs in 1.32.0
+extra-streamlit-components>=0.1.71
+streamlit_antd_components>=0.3.2  # Keep for now, but watch for menu rendering issues
+python-dotenv>=1.0.0
+slowapi>=0.1.9
+watchdog>=4.0.0
 
 # CLI / query language
 groq==0.34.0
