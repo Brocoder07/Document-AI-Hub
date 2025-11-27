@@ -1,60 +1,40 @@
-import re
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 import logging
 
 logger = logging.getLogger(__name__)
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
     """
-    Robust Chunking:
-    1. Cleans text (fixes '45,000perannum' issue).
-    2. Respects word boundaries (prevents splitting words in half).
+    Structure-Aware Chunking:
+    Uses Regex to respect numbered lists (1., 2., etc.) as primary split points.
     """
     if not text:
         return []
 
-    # --- STEP 1: SMART CLEANING ---
-    # Replace all newlines, tabs, and multiple spaces with a single space.
-    # This prevents the "joined words" issue from PDF/OCR line breaks.
-    clean_text = re.sub(r'\s+', ' ', text).strip()
+    # Regex Explanation:
+    # 1. \n\n           -> Standard paragraph break
+    # 2. \n(?=\d+\.)    -> Newline followed by a Number and a Dot (e.g., "1.", "2.")
+    #                      The (?=...) is a "lookahead", so it splits at the newline
+    #                      but keeps the number "1." at the start of the new chunk.
+    # 3. \n             -> Standard line break
+    # 4. " "            -> Word break
+    
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap,
+        length_function=len,
+        is_separator_regex=True,  # <--- ENABLE REGEX
+        separators=[
+            r"\n\n",           # Priority 1: Paragraphs
+            r"\n(?=\d+\.)",    # Priority 2: Numbered Lists (1., 2., etc.)
+            r"\n",             # Priority 3: Line breaks
+            r" ",              # Priority 4: Words
+            ""                 # Priority 5: Characters
+        ]
+    )
 
-    if len(clean_text) <= chunk_size:
-        return [clean_text]
-
-    # --- STEP 2: WORD-AWARE SPLITTING ---
-    chunks = []
-    start = 0
-    text_len = len(clean_text)
-
-    while start < text_len:
-        # Define the hard cutoff point
-        end = start + chunk_size
-        
-        # If we reached the end, add the remainder
-        if end >= text_len:
-            chunks.append(clean_text[start:])
-            break
-            
-        # Find the last space within the limit to avoid splitting a word
-        # We search backwards from 'end'
-        segment = clean_text[start:end]
-        last_space_relative = segment.rfind(' ')
-        
-        if last_space_relative == -1:
-            # Case: A single word is longer than chunk_size (unlikely, but safe to handle)
-            # Force split at limit
-            chunks.append(clean_text[start:end])
-            start += (chunk_size - overlap)
-        else:
-            # Clean split at the space
-            cut_point = start + last_space_relative
-            chunks.append(clean_text[start:cut_point])
-            
-            # Move start pointer, ensuring we overlap correctly
-            # We want the next chunk to start 'overlap' characters *before* the current cut
-            start = max(start + 1, cut_point - overlap)
-            
-            # Sanity check: ensure we don't get stuck in a loop if overlap >= chunk_size
-            if start <= start: 
-                 start = cut_point + 1 # Force forward progress if overlap logic fails
-
+    chunks = text_splitter.split_text(text)
+    
+    logger.info(f"Split text into {len(chunks)} chunks using Regex-Recursive Splitter")
+    
     return chunks

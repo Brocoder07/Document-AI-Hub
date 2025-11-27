@@ -63,3 +63,13 @@ def hard_delete_document(db: Session, file_id: str, user_id: int) -> bool:
     except Exception as e:
         db.rollback()
         raise Exception(f"Failed to delete document: {str(e)}")
+    
+def update_document_status(db: Session, file_id: str, status: str):
+    """
+    Updates the processing status of a document.
+    """
+    doc = get_document_by_file_id(db, file_id)
+    if doc:
+        doc.processing_status = status
+        db.commit()
+        db.refresh(doc)

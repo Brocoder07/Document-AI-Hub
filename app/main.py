@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.core.config import settings
-
+import warnings
 # --- FIX: Direct Imports to avoid AttributeError ---
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.transcription import router as transcription_router
 from app.api.embeddings import router as embeddings_router
 from app.api.search import router as search_router
+from app.api.vector_db import db_client
 from app.api.rag import router as rag_router
 from app.api.summarize import router as summarize_router
 from app.api.format import router as format_router
@@ -26,12 +27,15 @@ async def lifespan(app: FastAPI):
     # get_embedding_model() # Uncomment if needed
     yield
     print("🛑 SYSTEM SHUTDOWN")
+    db_client.close()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    lifespan=lifespan,
-    # ... other args ...
+    version="3.0.0",
+    lifespan=lifespan
 )
+
+warnings.filterwarnings("ignore", message="Accessing argon2.__version__ is deprecated")
 
 app.add_middleware(
     CORSMiddleware,

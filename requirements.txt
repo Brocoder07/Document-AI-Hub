@@ -29,7 +29,7 @@ pydantic-settings==2.1.0
 
 # AI/ML, Vector DB, transcription
 sentence-transformers==2.2.2
-chromadb==0.4.15
+weaviate-client>=4.5.0
 huggingface-hub==0.19.4
 openai-whisper==20231117
 pydub==0.25.1

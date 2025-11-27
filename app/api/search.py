@@ -1,62 +1,74 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from typing import List
-from app.api.dependencies import get_current_active_user
-from app.services import embedding_service
-from app.api.chroma_client import get_collection 
+from typing import List, Optional
+
+# --- Imports ---
+from app.api.dependencies import get_current_active_user, UserInDB
+from app.services.embedding_service import embed_texts
+# FIX: Use the new Weaviate Adapter
+from app.api.vector_db import db_client
 
 router = APIRouter()
-
-# SENIOR ENG FIX: Changed collection name from "documents" to "general_docs"
-# to match what is defined in file_processing_service.py
-collection = get_collection("general_docs")
-
-class SearchRequest(BaseModel):
-    query: str
-    top_k: int = 5
 
 class SearchResult(BaseModel):
     id: str
     text: str
-    metadata: dict = {}
+    metadata: dict
     score: float
 
-@router.post("/similarity", response_model=List[SearchResult])
-def similarity_search(
-    request: SearchRequest,
-    current_user = Depends(get_current_active_user)
+@router.get("/", response_model=List[SearchResult])
+async def search_documents(
+    q: str,
+    top_k: int = 5,
+    collection_name: str = "general_docs", # Weaviate class name (lowercase ok, adapter fixes it)
+    file_id: Optional[str] = None,
+    current_user: UserInDB = Depends(get_current_active_user)
 ):
     """
-    Perform a vector similarity search on the 'general_docs' collection.
+    Search endpoint that now uses Weaviate via the Adapter.
     """
     try:
-        # 1. Generate Embedding
-        query_embedding = embedding_service.generate_embedding(request.query)
+        # 1. Embed the Query
+        query_vector = embed_texts([q])[0]
+
+        # 2. Build Security Filters
+        # We ensure users can ONLY see their own documents
+        where = {"user_id": str(current_user.id)}
         
-        # 2. Query Vector DB (Chroma)
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=request.top_k,
-            include=["metadatas", "documents", "distances"]
+        if file_id:
+            # If filtering by a specific file, combine logic
+            where = {"$and": [{"user_id": str(current_user.id)}, {"file_id": file_id}]}
+
+        # 3. Execute Search (Using new Adapter)
+        results = db_client.query(
+            collection_name=collection_name,
+            query_vector=query_vector,
+            top_k=top_k,
+            where=where
         )
-        
-        # 3. Format Results
+
+        # 4. Format Results
         formatted_results = []
-        if results and results['ids']:
-            ids = results['ids'][0]
-            docs = results['documents'][0]
-            metas = results['metadatas'][0]
-            dists = results['distances'][0] if 'distances' in results else [0.0]*len(ids)
-            
-            for i in range(len(ids)):
-                formatted_results.append(SearchResult(
-                    id=ids[i],
-                    text=docs[i],
-                    metadata=metas[i] if metas[i] else {},
-                    score=dists[i]
-                ))
-                
+        
+        # Check if we got hits (Adapter returns lists inside a dict)
+        if results["documents"] and results["documents"][0]:
+            count = len(results["documents"][0])
+            for i in range(count):
+                # Calculate a rough similarity score from distance
+                # Weaviate returns distance (lower is better), we want similarity (higher is better)
+                dist = results["distances"][0][i]
+                score = max(0, 1.0 - (dist / 2)) 
+
+                formatted_results.append(
+                    SearchResult(
+                        id=results["ids"][0][i],
+                        text=results["documents"][0][i],
+                        metadata=results["metadatas"][0][i],
+                        score=round(score, 4)
+                    )
+                )
+        
         return formatted_results
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")

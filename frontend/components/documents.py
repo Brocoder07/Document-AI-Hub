@@ -17,11 +17,12 @@ def render_documents_page(api: APIClient):
             ]
         )
         if f and st.button("Upload"):
-            with st.spinner("Uploading & Indexing..."):
+            with st.spinner("Uploading..."):
                 res = api.upload_file(f, token)
             if "error" in res: st.error(res["error"])
             else: 
-                st.success("Uploaded successfully!")
+                st.success("Uploaded! Processing started...")
+                time.sleep(1)
                 st.rerun()
 
     st.divider()
@@ -35,36 +36,61 @@ def render_documents_page(api: APIClient):
     for file in files:
         with st.container():
             c1, c2, c3, c4 = st.columns([3, 1, 2, 2])
+            
+            # Column 1: Filename
             c1.markdown(f"**{file['filename']}**")
-            c2.caption(file['file_type'].upper())
+            
+            # Column 2: Status Badge (NEW)
+            # Defaults to 'completed' for legacy files that might lack the field
+            status = file.get("processing_status", "completed") 
+            
+            if status == "processing":
+                c2.info("⏳ Processing")
+            elif status == "failed":
+                c2.error("❌ Failed")
+            else:
+                c2.success("✅ Ready")
+
+            # Column 3: Date
             c3.caption(file['upload_date'])
             
-            # Action Buttons
+            # Column 4: Action Buttons
             with c4:
                 col_a, col_b = st.columns(2)
                 
-                # Delete
+                # Delete Button (Always available)
                 if col_a.button("🗑️", key=f"del_{file['file_id']}"):
                     if api.delete_file(file['file_id'], token):
                         st.toast("File deleted")
+                        time.sleep(0.5)
                         st.rerun()
                     else:
                         st.error("Failed to delete")
                 
-                ftype = file['file_type'].lower()
+                # Processing Buttons (Only if Ready)
+                is_ready = (status == "completed")
                 
-                # Logic: Redirect to Chat for results
-                if ftype in ['mp3', 'wav', 'mp4', 'm4a']:
-                    if col_b.button("🎙️ Transcribe", key=f"trans_{file['file_id']}"):
-                        handle_processing(api, token, file['file_id'], "transcription")
-                
-                elif ftype in ['png', 'jpg', 'jpeg', 'pdf']:
-                    if col_b.button("🔍 OCR", key=f"ocr_{file['file_id']}"):
-                        handle_processing(api, token, file['file_id'], "ocr")
+                if is_ready:
+                    ftype = file['file_type'].lower()
+                    
+                    if ftype in ['mp3', 'wav', 'mp4', 'm4a']:
+                        if col_b.button("🎙️ Transcribe", key=f"trans_{file['file_id']}"):
+                            handle_processing(api, token, file['file_id'], "transcription")
+                    
+                    elif ftype in ['png', 'jpg', 'jpeg', 'pdf']:
+                        if col_b.button("🔍 OCR", key=f"ocr_{file['file_id']}"):
+                            handle_processing(api, token, file['file_id'], "ocr")
 
-                elif ftype in ['txt', 'md', 'doc', 'docx']:
-                    if col_b.button("📝 Extract", key=f"ext_{file['file_id']}"):
-                        handle_processing(api, token, file['file_id'], "extraction")
+                    elif ftype in ['txt', 'md', 'doc', 'docx']:
+                        if col_b.button("📝 Extract", key=f"ext_{file['file_id']}"):
+                            handle_processing(api, token, file['file_id'], "extraction")
+                
+                # If processing, show spinner and auto-refresh
+                elif status == "processing":
+                    with col_b:
+                        st.spinner("...")
+                    time.sleep(2) # Wait 2s then refresh to check status again
+                    st.rerun()
 
             st.markdown("---")
 

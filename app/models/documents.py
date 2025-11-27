@@ -17,6 +17,6 @@ class Document(Base):
     
     content_hash = Column(String, index=True, nullable=False)
     upload_date = Column(DateTime(timezone=True), server_default=func.now())
-    
+    processing_status = Column(String, default="pending", nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="documents")

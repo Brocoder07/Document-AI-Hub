@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, UploadFile, File, BackgroundTasks, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 import os
 import uuid
@@ -30,10 +30,10 @@ class DocumentSchema(BaseModel):
     filename: str
     file_type: str
     file_size: int
-    upload_date: str 
+    upload_date: str
+    processing_status: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class UserFilesResponse(BaseModel):
     files: list[DocumentSchema]
@@ -114,7 +114,8 @@ async def upload_document(
                 "file_path": str(final_path),
                 "file_size": file_size,
                 "content_hash": content_hash, # Store the hash
-                "user_id": current_user.id 
+                "user_id": current_user.id,
+                "processing_status": "pending"
             })
         except Exception as db_err:
             if os.path.exists(final_path):
@@ -127,7 +128,7 @@ async def upload_document(
             saved_path=final_path, 
             file_id=file_uuid,          
             filename=original_filename, 
-            user_id=current_user.email,
+            user_id=str(current_user.id),
             user_role=current_user.role 
         )
         
@@ -158,7 +159,12 @@ async def list_user_files(
             "filename": d.filename,
             "file_type": d.file_type,
             "file_size": d.file_size,
-            "upload_date": d.upload_date.strftime("%Y-%m-%d %H:%M:%S")
+            "upload_date": d.upload_date.strftime("%Y-%m-%d %H:%M:%S"),
+            
+            # --- FIX: Add this line ---
+            # We use getattr with a default of "completed" to handle old files 
+            # that might have been uploaded before we added this column.
+            "processing_status": getattr(d, "processing_status", "completed")
         })
         
     return UserFilesResponse(files=results)

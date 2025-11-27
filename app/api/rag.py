@@ -15,18 +15,9 @@ from app.core.llm import get_llm
 router = APIRouter()
 
 # --- 1. Schemas ---
-# SENIOR ENG FIX: Removed 'general' mode.
-class QueryMode(str, Enum):
-    legal = "legal"
-    finance = "finance"
-    academic = "academic"
-    healthcare = "healthcare"
-    business = "business"
-
 class RagQueryRequest(BaseModel):
     query: str
     file_id: str | None = None
-    # mode field is inferred from user role, so it is not in the request body
     session_id: str | None = None 
 
 class RetrievedDoc(BaseModel):
@@ -45,7 +36,6 @@ class RagMetrics(BaseModel):
     confidence_score: float = 0.0
     hallucination_risk: str = "Unknown"
     citation_validation: dict = {}
-    evaluation: dict = {}
 
 class RagResponse(BaseModel):
     answer: str
@@ -81,21 +71,19 @@ async def generate_smart_title(query: str, answer: str) -> str:
 def map_role_to_mode(role: str) -> str:
     """
     Maps a user's business role to a technical RAG system mode.
-    Fallbacks to 'business' instead of 'general'.
     """
     role = role.lower().strip() if role else "employee"
     
     mapping = {
         "banker": "finance",
+        "financial_analyst": "finance",
         "lawyer": "legal",
-        "doctor": "healthcare",
+        "doctor": "healthcare",   # NEW: Added Healthcare
         "student": "academic",
         "researcher": "academic",
         "business man": "business",
-        "business_man": "business",
-        "employee": "business"  # SENIOR ENG FIX: Mapped Employee to Business
+        "employee": "business"
     }
-    # Default fallback is now business
     return mapping.get(role, "business")
 
 # --- 3. Endpoints ---
@@ -138,6 +126,7 @@ def get_session_messages(
     return [
         ChatMessageSchema(
             role=m.role, 
+            # Decrypt content if your chat_service encrypts it, otherwise pass as is
             content=m.content, 
             created_at=m.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             retrieved_docs=m.retrieved_docs
@@ -154,7 +143,10 @@ async def get_rag_answer(
     db: Session = Depends(get_db)
 ):
     try:
-        user_id = current_user.email
+        # --- FIX: Use ID (String), not Email ---
+        # The migration script stored 'user_id' as str(id), e.g. "5"
+        user_id = str(current_user.id) 
+        
         session_id = rag_request.session_id
         
         # --- LOGIC: Automatic Role-Based Mode ---
@@ -174,7 +166,7 @@ async def get_rag_answer(
         
         chat_history_str = chat_service.get_chat_history_string(db, session_id)
 
-        # Pass 'system_mode' (which is now guaranteed not to be 'general')
+        # Execute RAG Pipeline
         result = await answer_query(
             query=rag_request.query,
             user_id=user_id,
@@ -191,7 +183,8 @@ async def get_rag_answer(
                 new_title = await generate_smart_title(q, a)
                 from app.db.session import SessionLocal
                 with SessionLocal() as local_db:
-                    chat_service.update_session_title(local_db, sid, new_title)
+                    encrypted_title = security.encrypt_message(new_title)
+                    chat_service.update_session_title(local_db, sid, encrypted_title)
 
             background_tasks.add_task(update_title_task, session_id, rag_request.query, result["answer"])
 
