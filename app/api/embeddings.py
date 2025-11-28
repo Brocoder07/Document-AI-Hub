@@ -1,8 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from typing import Union, List
-# Import dependencies inside the endpoint if circular imports persist, 
-# but usually top-level is fine if dependencies.py is clean.
 from app.api.dependencies import get_current_active_user, UserInDB
 from app.services.embedding_service import embed_texts
 
@@ -36,7 +34,7 @@ async def generate_embeddings_endpoint(
             
         return EmbeddingResponse(
             embedding=embeddings,
-            model="sentence-transformers/all-MiniLM-L6-v2"
+            model="sentence-transformers/all-mpnet-base-v2"
         )
         
     except Exception as e:

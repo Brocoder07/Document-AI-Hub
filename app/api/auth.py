@@ -3,10 +3,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from datetime import timedelta
-
 import app.core.security as security
 import app.services.user_service as user_service
-from app.api.dependencies import get_current_active_user
 from app.db.session import get_db
 from app.core.config import settings
 
@@ -23,7 +21,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     full_name: str
     password: str
-    role: str  # <--- FIX: Removed default="user". User MUST provide this.
+    role: str
 
 class UserPublic(BaseModel):
     username: str
@@ -32,7 +30,7 @@ class UserPublic(BaseModel):
     role: str
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
 
 
 # --- Endpoints ---

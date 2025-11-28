@@ -1,6 +1,6 @@
 import logging
 import numpy as np
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, util
 from app.core.config import settings

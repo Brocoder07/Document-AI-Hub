@@ -2,7 +2,6 @@ import time
 import logging
 from PyPDF2 import PdfReader
 from PIL import Image
-import os
 
 # --- Internal Imports ---
 from app.services.chunking import chunk_text

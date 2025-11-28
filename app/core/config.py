@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = Field(..., validation_alias="GROQ_API_KEY")
     GROQ_MODEL: str = Field(default="llama-3.1-8b-instant", validation_alias="GROQ_MODEL")
 
-    # Paths
-    CHROMA_PERSIST_DIR: str = "data/embeddings/chroma_db"
     UPLOAD_DIR: str = "data/documents"
     OCR_TEMP_DIR: str = "data/ocr_temp"
 
@@ -44,4 +42,3 @@ settings = Settings()
 
 # Ensure directories exist
 os.makedirs(settings.OCR_TEMP_DIR, exist_ok=True)
-os.makedirs(settings.CHROMA_PERSIST_DIR, exist_ok=True)

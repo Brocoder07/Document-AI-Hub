@@ -4,7 +4,7 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, ValidationError
 from cryptography.fernet import Fernet
-from typing import Any # <-- 1. IMPORT 'Any'
+from typing import Any# <-- 1. IMPORT 'Any'
 
 from app.core.config import settings
 

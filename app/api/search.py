@@ -1,11 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional
-
-# --- Imports ---
 from app.api.dependencies import get_current_active_user, UserInDB
 from app.services.embedding_service import embed_texts
-# FIX: Use the new Weaviate Adapter
 from app.api.vector_db import db_client
 
 router = APIRouter()

@@ -1,8 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from sqlalchemy.orm import Session
-
 from app.api.dependencies import get_current_active_user, UserInDB
 from app.services.user_service import update_user, soft_delete_user
 from app.db.session import get_db

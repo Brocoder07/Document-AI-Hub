@@ -1,5 +1,5 @@
 import streamlit as st
-from utils.ui import load_custom_css, stream_text
+from utils.ui import load_custom_css
 import re
 
 def render_chat_page(api):

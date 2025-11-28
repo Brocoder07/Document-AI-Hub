@@ -2,13 +2,8 @@ from abc import ABC, abstractmethod
 import time
 import logging
 import re
-from typing import List, Dict, Any, Optional
-
 from langchain.prompts import ChatPromptTemplate, PromptTemplate
-
-# --- Internal Imports ---
-# Use the new Vector DB Adapter instead of direct Chroma client
-from app.api.vector_db import db_client 
+from app.api.vector_db import db_client
 from app.services.embedding_service import embed_texts
 from app.core.llm import get_llm
 from app.generation.citation_enforcer import validate_citations
@@ -249,10 +244,20 @@ class RAGPipeline:
         return results, time.time() - start_time, scores
 
     def _normalize_citations(self, text: str) -> str:
+        """
+        Robustly standardizes citations.
+        Converts: (Source 1), [Source 1], (1), [1] -> [Source 1]
+        Ignores years like (2025) by restricting digits to 1-3.
+        """
         return re.sub(
-            r"[\(\[](?:Doc\s?|Source\s?)?(\d+)[\)\]]", 
-            lambda m: f"[Source {m.group(1)}]", 
-            text, 
+            # The Match:
+            # 1. [\(\[]       -> Starts with '(' or '['
+            # 2. (?:...)?     -> Optional "Doc" or "Source" prefix
+            # 3. (\d{1,3})    -> Capture 1 to 3 digits ONLY. (Stops matching 2025)
+            # 4. [\)\]]       -> Ends with ')' or ']'
+            r"[\(\[](?:Doc\s?|Source\s?)?(\d{1,3})[\)\]]",
+            lambda m: f"[Source {m.group(1)}]",
+            text,
             flags=re.IGNORECASE
         )
 

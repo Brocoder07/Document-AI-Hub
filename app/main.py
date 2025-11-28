@@ -17,14 +17,9 @@ from app.api.summarize import router as summarize_router
 from app.api.format import router as format_router
 # ---------------------------------------------------
 
-from app.services.transcription_service import get_whisper_model
-from app.services.embedding_service import get_model as get_embedding_model
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # (Keep your existing lifespan logic)
     print("🚀 SYSTEM STARTUP")
-    # get_embedding_model() # Uncomment if needed
     yield
     print("🛑 SYSTEM SHUTDOWN")
     db_client.close()
@@ -34,9 +29,9 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan
 )
-
 warnings.filterwarnings("ignore", message="Accessing argon2.__version__ is deprecated")
 
+# --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # For dev, allow all. For prod, use ["http://localhost:8501"]

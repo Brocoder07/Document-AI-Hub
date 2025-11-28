@@ -1,6 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
-from enum import Enum
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from langchain.prompts import PromptTemplate

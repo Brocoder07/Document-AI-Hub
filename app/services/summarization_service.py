@@ -1,12 +1,8 @@
 from app.services.chunking import chunk_text
-from app.core.llm import get_llm # <-- IMPORT THE NEW FUNCTION
-
+from app.core.llm import get_llm
 from langchain.prompts import ChatPromptTemplate
 from langchain.chains.summarize import load_summarize_chain
 from langchain.docstore.document import Document
-import asyncio
-
-# --- REMOVED LLM FROM HERE ---
 
 async def summarize_text_async(text: str, method: str, length: str) -> str:
     """

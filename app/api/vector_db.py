@@ -3,7 +3,6 @@ from weaviate.classes.query import MetadataQuery, Filter
 from weaviate.classes.config import Property, DataType, Tokenization, Configure
 import os
 import logging
-
 logger = logging.getLogger(__name__)
 
 class WeaviateAdapter:
@@ -29,7 +28,7 @@ class WeaviateAdapter:
             self.client.collections.create(
                 name=class_name,
                 # Explicitly configure the 'default' vector space
-                vectorizer_config=[
+                vector_config=[
                     Configure.NamedVectors.none(name="default")
                 ],
                 properties=[

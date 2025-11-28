@@ -37,7 +37,8 @@ def create_user(db: Session, user_data: dict) -> User:
         "doctor", 
         "banker", 
         "employee", 
-        "business man"
+        "business man",
+        "financial analyst"
     ]
     
     if requested_role_lower not in valid_roles:

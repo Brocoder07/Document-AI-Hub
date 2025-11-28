@@ -1,7 +1,6 @@
 import pytesseract
 from pdf2image import convert_from_path
 from PIL import Image
-import os
 from app.core.config import settings
 
 # Set specific Tesseract path (Windows)
