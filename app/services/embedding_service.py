@@ -7,7 +7,7 @@ def get_model():
     global _model
     if _model is None:
         # Use getattr to prevent errors if config is missing the key
-        model_name = getattr(settings, "EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        model_name = getattr(settings, "EMBEDDING_MODEL", "all-mpnet-base-v2")
         _model = SentenceTransformer(model_name)
     return _model
 

@@ -35,6 +35,7 @@ class RagMetrics(BaseModel):
     confidence_score: float = 0.0
     hallucination_risk: str = "Unknown"
     citation_validation: dict = {}
+    factors: dict = {}
 
 class RagResponse(BaseModel):
     answer: str
@@ -51,7 +52,8 @@ class ChatMessageSchema(BaseModel):
     role: str
     content: str
     created_at: str
-    retrieved_docs: Optional[List[dict]] = None
+    retrieved_docs: Optional[List[dict]] = None,
+    metrics: Optional[dict] = None
 
 # --- 2. Helpers ---
 async def generate_smart_title(query: str, answer: str) -> str:
@@ -75,7 +77,7 @@ def map_role_to_mode(role: str) -> str:
     
     mapping = {
         "banker": "finance",
-        "financial_analyst": "finance",
+        "financial analyst": "finance",
         "lawyer": "legal",
         "doctor": "healthcare",   # NEW: Added Healthcare
         "student": "academic",
@@ -128,7 +130,8 @@ def get_session_messages(
             # Decrypt content if your chat_service encrypts it, otherwise pass as is
             content=m.content, 
             created_at=m.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            retrieved_docs=m.retrieved_docs
+            retrieved_docs=m.retrieved_docs,
+            metrics=m.metrics
         ) for m in msgs
     ]
 
@@ -175,7 +178,7 @@ async def get_rag_answer(
         )
         
         chat_service.add_message(db, session_id, "user", rag_request.query)
-        chat_service.add_message(db, session_id, "assistant", result["answer"], retrieved_docs=result["retrieved"])
+        chat_service.add_message(db, session_id, "assistant", result["answer"], retrieved_docs=result["retrieved"], metrics=result["metrics"])
 
         if is_new_session:
             async def update_title_task(sid, q, a):

@@ -74,7 +74,7 @@ def delete_session(db: Session, session_id: str):
 
 # --- 2. Message Management ---
 
-def add_message(db: Session, session_id: str, role: str, content: str, retrieved_docs: list = None):
+def add_message(db: Session, session_id: str, role: str, content: str, retrieved_docs: list = None, metrics: dict = None):
     """
     Adds a new message to the session. Encrypts content before saving.
     Now also stores retrieved documents for assistant messages.
@@ -90,7 +90,8 @@ def add_message(db: Session, session_id: str, role: str, content: str, retrieved
         session_id=session_id, 
         role=role, 
         content=encrypted_content,
-        retrieved_docs=encrypted_retrieved  # <-- STORE RETRIEVED DOCS
+        retrieved_docs=encrypted_retrieved,  # <-- STORE RETRIEVED DOCS
+        metrics=metrics
     )
     db.add(msg)
     db.commit()

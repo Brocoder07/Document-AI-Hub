@@ -3,13 +3,13 @@ from weaviate.classes.query import MetadataQuery, Filter
 from weaviate.classes.config import Property, DataType, Tokenization, Configure
 import os
 import logging
+
 logger = logging.getLogger(__name__)
 
 class WeaviateAdapter:
     def __init__(self):
-        self.client = weaviate.connect_to_local(
-            headers={"X-OpenAI-Api-Key": os.getenv("OPENAI_API_KEY", "")}
-        )
+        # Connect to local instance (No API key needed for local text2vec-transformers or custom vectors)
+        self.client = weaviate.connect_to_local()
 
     def close(self):
         if self.client:
@@ -22,15 +22,15 @@ class WeaviateAdapter:
     def upsert(self, collection_name: str, ids: list[str], documents: list[str], embeddings: list[list[float]], metadatas: list[dict]):
         class_name = self._clean_name(collection_name)
         
-        # 1. Define Schema with EXPLICIT Named Vector
+        # 1. Define Schema (Standard Unnamed Vector)
         if not self.client.collections.exists(class_name):
-            logger.info(f"Creating class '{class_name}' with explicit schema...")
+            logger.info(f"Creating class '{class_name}' with standard schema...")
             self.client.collections.create(
                 name=class_name,
-                # Explicitly configure the 'default' vector space
-                vector_config=[
-                    Configure.NamedVectors.none(name="default")
-                ],
+                
+                # Use standard vectorizer config (No "default" name needed)
+                vectorizer_config=Configure.Vectorizer.none(), 
+
                 properties=[
                     Property(name="text", data_type=DataType.TEXT),
                     # IDs as Keys (Exact Match)
@@ -43,7 +43,7 @@ class WeaviateAdapter:
 
         collection = self.client.collections.get(class_name)
 
-        # 2. Batch Upload with Error Checking
+        # 2. Batch Upload
         with collection.batch.dynamic() as batch:
             for i, doc_id in enumerate(ids):
                 props = {
@@ -51,10 +51,11 @@ class WeaviateAdapter:
                     **metadatas[i]
                 }
                 
-                # Ensure vector is named 'default'
+                # --- FIX: Pass raw list, NOT a dictionary ---
+                # Ensure we have a clean list of floats
                 vec = embeddings[i]
-                if not isinstance(vec, dict):
-                    vec = {"default": vec}
+                if isinstance(vec, dict):
+                    vec = list(vec.values())[0]
 
                 batch.add_object(
                     properties=props,
@@ -62,7 +63,7 @@ class WeaviateAdapter:
                     uuid=self._generate_uuid(doc_id)
                 )
         
-        # 3. CRITICAL: Check for silent failures
+        # 3. Check for silent failures
         if len(collection.batch.failed_objects) > 0:
             logger.error(f"❌ Failed to upsert {len(collection.batch.failed_objects)} objects!")
             for failed in collection.batch.failed_objects[:3]:
@@ -71,9 +72,13 @@ class WeaviateAdapter:
             logger.info(f"Upserted {len(documents)} objects into Weaviate class '{class_name}'")
 
     def query(self, collection_name: str, query_vector: list[float], top_k: int = 6, where: dict = None):
+        """
+        Executes a vector search using the standard (unnamed) vector.
+        """
         class_name = self._clean_name(collection_name)
         collection = self.client.collections.get(class_name)
 
+        # 1. Construct Filter
         w_filter = None
         if where:
             try:
@@ -91,18 +96,20 @@ class WeaviateAdapter:
             except Exception as e:
                 logger.error(f"Filter construction failed: {e}")
 
+        # 2. Execute Query
         try:
             response = collection.query.near_vector(
                 near_vector=query_vector,
                 limit=top_k,
                 filters=w_filter,
-                return_metadata=MetadataQuery(distance=True),
-                target_vector="default" # Must match the schema name
+                return_metadata=MetadataQuery(distance=True)
+                # Note: No 'target_vector' needed for standard vectors
             )
         except Exception as e:
             logger.error(f"Weaviate search failed: {e}")
             return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
 
+        # 3. Format Results
         results = {
             "ids": [[]],
             "documents": [[]],

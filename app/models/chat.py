@@ -22,6 +22,7 @@ class ChatMessage(Base):
     role = Column(String, nullable=False) # "user" or "assistant"
     content = Column(Text, nullable=False)
     retrieved_docs = Column(JSON, nullable=True) # Store retrieved document as JSON
+    metrics = Column(JSON, nullable=True)  # Store metrics as JSON
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship("ChatSession", back_populates="messages")

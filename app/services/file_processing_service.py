@@ -8,7 +8,8 @@ from app.services.chunking import chunk_text
 from app.services.embedding_service import embed_texts
 from app.services.ocr_service import extract_text_from_pdf, extract_text_from_image
 from app.services.transcription_service import transcribe_audio
-from app.services.document_reader import read_text_file, read_docx_file
+# UPDATED IMPORT: Added read_excel_file
+from app.services.document_reader import read_text_file, read_docx_file, read_excel_file
 from app.services.document_service import update_document_status
 from app.db.session import SessionLocal
 from app.api.vector_db import db_client 
@@ -23,6 +24,7 @@ def get_file_type(filename: str) -> str:
     if extension in ['mp3', 'wav', 'm4a', 'mp4']: return 'audio'
     if extension in ['txt', 'md']: return 'text'
     if extension in ['docx', 'doc']: return 'docx'
+    if extension in ['xlsx', 'xls']: return 'excel' # NEW: Detect Excel
     return 'other'
 
 def process_document(saved_path: str, file_id: str, filename: str, user_id: str, user_role: str):
@@ -64,6 +66,16 @@ def process_document(saved_path: str, file_id: str, filename: str, user_id: str,
             text = read_text_file(saved_path, user_id)
         elif file_type == 'docx':
             text = read_docx_file(saved_path)
+        # --- NEW: Excel Handler ---
+        elif file_type == 'excel':
+            logger.info(f"[USER:{user_id}] Processing as Excel Spreadsheet...")
+            try:
+                text = read_excel_file(saved_path)
+            except Exception as e:
+                logger.error(f"[USER:{user_id}] Excel processing failed: {e}")
+                update_document_status(db, file_id, "failed")
+                return
+        # --------------------------
         else:
             logger.warning(f"❌ Unsupported type: {filename}")
             update_document_status(db, file_id, "failed")
@@ -77,6 +89,9 @@ def process_document(saved_path: str, file_id: str, filename: str, user_id: str,
             return
 
         # --- PHASE 2: CHUNKING ---
+        # Note: Our "Contextual Row" format survives chunking perfectly.
+        # Even if a chunk splits in the middle of Row 50, Row 51 starts with 
+        # full context "{ Name: ... }" so the LLM never gets lost.
         chunks = chunk_text(text)
         if not chunks:
             logger.warning("❌ No chunks generated.")

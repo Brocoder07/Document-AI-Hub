@@ -59,7 +59,8 @@ def render_register(api):
                 "Lawyer", 
                 "Banker", 
                 "Business Man", 
-                "Employee"
+                "Employee",
+                "Financial Analyst"
             ])
             
             pass1 = st.text_input("Password", type="password")

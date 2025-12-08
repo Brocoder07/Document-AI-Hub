@@ -13,7 +13,8 @@ def render_documents_page(api: APIClient):
             type=[
                 "pdf", "png", "jpg", "jpeg",  # Images/Docs
                 "mp3", "wav", "mp4", "m4a",   # Audio/Video
-                "txt", "md", "doc", "docx"    # Text/Office
+                "txt", "md", "doc", "docx",    # Text/Office
+                "xlsx", "xls"                  # NEW: Excel
             ]
         )
         if f and st.button("Upload"):

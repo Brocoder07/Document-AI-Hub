@@ -101,8 +101,9 @@ def render_chat_session_item(api, token, session):
                 {
                     "role": m["role"], 
                     "content": m["content"],
-                    "retrieved": m.get("retrieved_docs", [])
-                } 
+                    "retrieved": m.get("retrieved_docs", []),
+                    "metrics": m.get("metrics", {})
+                }
                 for m in msgs
             ]
             st.rerun()
@@ -194,6 +195,11 @@ def render_chat_messages(api, token):
     for msg_index, msg in enumerate(st.session_state.chat_history):
         with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🤖"):
             st.markdown(msg["content"])
+            
+            metrics = msg.get("metrics")
+            if metrics:
+                render_metrics_component(metrics)
+
             retrieved_docs = msg.get("retrieved")
             if retrieved_docs and isinstance(retrieved_docs, list) and len(retrieved_docs) > 0:
                 render_sources_component(retrieved_docs)
@@ -220,16 +226,21 @@ def handle_user_input(api, token, prompt, selected_file_id, sessions):
 
         answer = response.get("answer", "")
         retrieved = response.get("retrieved", [])
+        metrics = response.get("metrics", {})
         st.session_state.chat_session_id = response.get("session_id")
-        
         st.markdown(answer)
+
+        if metrics:
+            render_metrics_component(metrics)
+
         if retrieved and isinstance(retrieved, list) and len(retrieved) > 0:
             render_sources_component(retrieved)
 
         new_assistant_message = {
             "role": "assistant", 
             "content": answer,
-            "retrieved": retrieved
+            "retrieved": retrieved,
+            "metrics": metrics
         }
         st.session_state.chat_history.append(new_assistant_message)
         render_message_actions(api, token, answer, len(st.session_state.chat_history) - 1)
@@ -302,3 +313,51 @@ def render_sources_component(docs):
                     """, unsafe_allow_html=True)
     except Exception:
         pass
+
+def render_metrics_component(metrics):
+    """
+    Renders the RAG confidence metrics in a stylish expander.
+    """
+    if not metrics or not isinstance(metrics, dict):
+        return
+
+    # Determine Color based on Confidence
+    score = metrics.get("confidence_score", 0)
+    category = metrics.get("confidence_category", "Low")
+    
+    if score >= 75:
+        color = "green"
+        icon = "✅"
+    elif score >= 50:
+        color = "orange"
+        icon = "⚠️"
+    else:
+        color = "red"
+        icon = "🚨"
+
+    label = f"{icon} **Confidence: {category}** ({score}%)"
+
+    with st.expander(label, expanded=False):
+        # Top Row: Key Risks
+        c1, c2 = st.columns(2)
+        c1.markdown(f"**Hallucination Risk:** {metrics.get('hallucination_risk', 'Unknown')}")
+        c2.markdown(f"**Processing Time:** {metrics.get('processing_time_total', 0)}s")
+        
+        st.divider()
+        
+        # Bottom Row: Detailed Factors (if available)
+        factors = metrics.get("factors")
+        if not factors:
+             factors = metrics.get("citation_validation", {})
+
+        if factors:
+            f1, f2, f3 = st.columns(3)
+            f1.metric("Retrieval Quality", f"{factors.get('retrieval_quality', 0)}%")
+            cit_val = factors.get('citation_coverage') or (factors.get('coverage', 0) * 100)
+            f2.metric("Citation Coverage", f"{cit_val}%")
+            f3.metric("Answer Depth", f"{factors.get('answer_depth', 0)}%")
+            
+        # Token Usage
+        usage = metrics.get("token_usage", {})
+        if usage:
+            st.caption(f"Tokens: {usage.get('total', 0)} (In: {usage.get('input', 0)}, Out: {usage.get('output', 0)})")
