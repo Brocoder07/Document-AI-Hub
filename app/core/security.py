@@ -4,6 +4,7 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, ValidationError
 from cryptography.fernet import Fernet
+import zlib
 from typing import Any# <-- 1. IMPORT 'Any'
 
 from app.core.config import settings
@@ -68,19 +69,22 @@ def encrypt_message(plain_text: str) -> str:
     """Encrypts raw text into a Fernet token string."""
     if not plain_text:
         return ""
+    compressed = zlib.compress(plain_text.encode('utf-8'))
     # Fernet encrypt expects bytes, returns bytes. We decode back to str for DB storage.
     return cipher_suite.encrypt(plain_text.encode('utf-8')).decode('utf-8')
 
 def decrypt_message(cipher_text: str) -> str:
-    """
-    Decrypts a Fernet token string back to raw text.
-    Handles legacy (unencrypted) data gracefully.
-    """
+    """Decrypts then Decompresses text."""
     if not cipher_text:
         return ""
     try:
-        # Try to decrypt
-        return cipher_suite.decrypt(cipher_text.encode('utf-8')).decode('utf-8')
+        # 1. Decrypt (Base64 String -> Fernet Bytes -> Compressed Bytes)
+        decrypted_compressed = cipher_suite.decrypt(cipher_text.encode('utf-8'))
+        # 2. Decompress (Compressed Bytes -> Original Bytes -> String)
+        return zlib.decompress(decrypted_compressed).decode('utf-8')
     except Exception:
-        # Fallback: If decryption fails, assume it's old unencrypted text
-        return cipher_text
+        # Fallback for old, uncompressed messages
+        try:
+            return cipher_suite.decrypt(cipher_text.encode('utf-8')).decode('utf-8')
+        except:
+            return cipher_text

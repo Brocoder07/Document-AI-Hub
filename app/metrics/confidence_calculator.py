@@ -21,7 +21,7 @@ def calculate_confidence(
         if is_summarization:
             # Boost score for instructional queries, but do not assume perfection.
             # Even if we found the file, relevance might vary. Cap at 95.
-            retrieval_score = 95.0 
+            retrieval_score = 95.0
         else:
             avg_sim = sum(d.get("score", 0) for d in retrieved_docs) / len(retrieved_docs)
             retrieval_score = min(avg_sim * 100, 100)

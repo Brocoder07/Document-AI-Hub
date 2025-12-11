@@ -1,7 +1,7 @@
 import requests
 import os
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8002")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 class APIClient:
     def __init__(self):
@@ -113,7 +113,7 @@ class APIClient:
             form_data = {k: v for k, v in form_data.items() if v}
             
             res = requests.post(
-                f"{self.base_url}/summarize/text", 
+                f"{self.base_url}/summarize/text",
                 data=form_data,  # Form data, not JSON
                 headers=self._headers(token),
                 timeout=60
