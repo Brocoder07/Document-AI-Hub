@@ -1,3 +1,23 @@
+"""
+RAG Service — Production Grade for 3GPP Telecom Standards
+
+Architecture:
+1. Strategy Pattern for domain-specific behavior (Telecom, Legal, etc.)
+2. Hybrid Retrieval: Vector Similarity + BM25 Keyword Search
+3. Cross-Encoder Re-ranking for precision
+4. Chain-of-Thought Prompting with Self-Verification
+5. Post-generation Hallucination Guard (claim-level verification)
+6. Faithfulness-aware Confidence Scoring
+
+Key Anti-Hallucination Mechanisms:
+- Explicit refusal protocol ("I cannot find this in the provided documents")
+- Source-grounded generation (strict context-only answering)
+- Chain-of-thought reasoning (forces step-by-step derivation)
+- Post-generation claim verification (hallucination_guard.py)
+- Citation content accuracy checking (not just format)
+- Relevance threshold filtering (removes low-quality context)
+"""
+
 from abc import ABC, abstractmethod
 import time
 import logging
@@ -8,53 +28,125 @@ import re
 from langchain.prompts import ChatPromptTemplate, PromptTemplate
 from app.api.vector_db import db_client
 from app.services.embedding_service import embed_texts
+from app.services.reranker import rerank_documents
 from app.core.llm import get_llm
 from app.generation.citation_enforcer import validate_citations
+from app.generation.hallucination_guard import run_hallucination_check
 from app.metrics.confidence_calculator import calculate_confidence
 
 logger = logging.getLogger(__name__)
 
-# --- 1. ABSTRACTION: The Strategy Interface ---
+# ═══════════════════════════════════════════════════════════════
+# 3GPP GLOSSARY — Injected into telecom prompts for accuracy
+# ═══════════════════════════════════════════════════════════════
+
+TELECOM_3GPP_GLOSSARY = """
+KEY 3GPP TERMS:
+- UE: User Equipment (mobile device)
+- gNB: gNodeB (5G NR base station)
+- eNB: eNodeB (LTE base station)
+- AMF: Access and Mobility Management Function
+- SMF: Session Management Function
+- UPF: User Plane Function
+- PCF: Policy Control Function
+- UDM: Unified Data Management
+- AUSF: Authentication Server Function
+- NRF: Network Repository Function
+- NEF: Network Exposure Function
+- NSSF: Network Slice Selection Function
+- AF: Application Function
+- DN: Data Network
+- RAN: Radio Access Network
+- CN: Core Network
+- NG-RAN: Next Generation RAN (5G)
+- E-UTRAN: Evolved UTRAN (LTE)
+- PDU: Protocol Data Unit
+- QoS: Quality of Service
+- NAS: Non-Access Stratum
+- RRC: Radio Resource Control
+- S-NSSAI: Single Network Slice Selection Assistance Information
+- DNN: Data Network Name
+- SUPI: Subscription Permanent Identifier
+- SUCI: Subscription Concealed Identifier
+- PLMN: Public Land Mobile Network
+"""
+
+# ═══════════════════════════════════════════════════════════════
+# 1. STRATEGY PATTERN — Domain-Specific Behavior
+# ═══════════════════════════════════════════════════════════════
 
 class RAGStrategy(ABC):
-    """
-    Abstract Base Class that defines the behavior for different RAG modes.
-    Encapsulates domain-specific logic like prompts, collections, and rules.
-    """
+    """Abstract Base Class for domain-specific RAG behavior."""
     def __init__(self, mode: str):
         self.mode = mode
 
     @abstractmethod
     def get_collection_name(self) -> str:
-        """Returns the specific Vector DB collection/class to search."""
         pass
 
     @abstractmethod
     def get_system_role(self) -> str:
-        """Returns the persona/system prompt for the LLM."""
         pass
 
     @property
     def use_hyde(self) -> bool:
-        """Determines if HyDE (Hypothetical Document Embeddings) should be used."""
         return False
 
+    @property
+    def inject_glossary(self) -> bool:
+        return False
+
+    def get_glossary(self) -> str:
+        return ""
+
     def post_process_answer(self, answer: str) -> str:
-        """Hook for any domain-specific answer cleanup."""
         return answer
 
-# --- 2. INHERITANCE: Concrete Strategies ---
+
+class TelecomStrategy(RAGStrategy):
+    """
+    3GPP Telecom Standards Strategy — Primary focus of this project.
+    
+    Features:
+    - Searches telecom_docs collection (3GPP-specific index)
+    - Injects 3GPP glossary for accurate acronym interpretation
+    - Strict technical accuracy system prompt
+    - No HyDE (3GPP queries are typically precise)
+    """
+    def get_collection_name(self) -> str:
+        return "telecom_docs"
+
+    def get_system_role(self) -> str:
+        return (
+            "You are a 3GPP telecommunications standards expert. "
+            "You have deep knowledge of 5G NR, LTE, network architecture, "
+            "protocols, and procedures as defined in 3GPP Technical Specifications (TS) "
+            "and Technical Reports (TR). "
+            "Provide precise, technically accurate answers using exact terminology "
+            "from the 3GPP specifications. "
+            "Always reference specific clause/section numbers when available. "
+            "If the information is not found in the provided context, explicitly state "
+            "that you cannot find the answer in the provided documents."
+        )
+
+    @property
+    def inject_glossary(self) -> bool:
+        return True
+
+    def get_glossary(self) -> str:
+        return TELECOM_3GPP_GLOSSARY
+
 
 class GeneralStrategy(RAGStrategy):
     def get_collection_name(self) -> str:
         return "general_docs"
 
     def get_system_role(self) -> str:
-        return "You are a helpful assistant. Answer clearly and concisely."
+        return "You are a helpful assistant. Answer clearly and concisely based only on the provided context."
     
     @property
     def use_hyde(self) -> bool:
-        return True  # General queries often benefit from HyDE
+        return True
 
 class LegalStrategy(RAGStrategy):
     def get_collection_name(self) -> str:
@@ -69,9 +161,6 @@ class LegalStrategy(RAGStrategy):
         return answer
 
 class HealthcareStrategy(RAGStrategy):
-    """
-    NEW: Strategy for Doctors and Medical Professionals.
-    """
     def get_collection_name(self) -> str:
         return "medical_docs"
 
@@ -83,7 +172,6 @@ class HealthcareStrategy(RAGStrategy):
         )
 
     def post_process_answer(self, answer: str) -> str:
-        # Mandatory Medical Disclaimer
         if "medical advice" not in answer.lower():
             return answer + "\n\n*Disclaimer: This content is for informational purposes only and does not constitute professional medical advice, diagnosis, or treatment.*"
         return answer
@@ -113,22 +201,26 @@ class BusinessStrategy(RAGStrategy):
     def get_system_role(self) -> str:
         return "You are a business assistant. Focus on actionable insights and clear summaries."
 
-# --- 3. FACTORY PATTERN: Object Creation ---
+# ═══════════════════════════════════════════════════════════════
+# 2. FACTORY — Strategy Selection
+# ═══════════════════════════════════════════════════════════════
 
 class StrategyFactory:
-    """
-    Factory class to instantiate the correct strategy based on user role or mode.
-    """
     @staticmethod
     def get_strategy(mode: str) -> RAGStrategy:
         mode = mode.lower().strip()
         
         strategies = {
+            # Telecom (PRIMARY)
+            "telecom": TelecomStrategy("telecom"),
+            "3gpp": TelecomStrategy("telecom"),
+            "engineer": TelecomStrategy("telecom"),
+            
             # Legal
             "legal": LegalStrategy("legal"),
             "lawyer": LegalStrategy("legal"),
             
-            # Healthcare (NEW)
+            # Healthcare
             "healthcare": HealthcareStrategy("healthcare"),
             "doctor": HealthcareStrategy("healthcare"),
             "medical": HealthcareStrategy("healthcare"),
@@ -148,22 +240,26 @@ class StrategyFactory:
             "employee": BusinessStrategy("business"),
             "executive": BusinessStrategy("business"),
         }
-        # Default fallback
         return strategies.get(mode, GeneralStrategy("general"))
 
-# --- 4. ENCAPSULATION: The Context / Pipeline ---
+# ═══════════════════════════════════════════════════════════════
+# 3. RAG PIPELINE — The Core Engine
+# ═══════════════════════════════════════════════════════════════
 
 class RAGPipeline:
     """
-    The Context class. It orchestrates the RAG flow but delegates 
-    specific behaviors to the injected Strategy object.
+    Production-grade RAG pipeline with:
+    - Hybrid retrieval (vector + BM25)
+    - Cross-encoder re-ranking
+    - Chain-of-thought prompting
+    - Post-generation hallucination guard
     """
     def __init__(self, strategy: RAGStrategy):
         self.strategy = strategy
         self.llm = get_llm()
 
     async def _route_query(self, query: str) -> str:
-        """Helper to classify query intent."""
+        """Classify query intent."""
         try:
             prompt = ChatPromptTemplate.from_messages([
                 ("system", "Classify as 'general' or 'specific'."), ("user", "{query}")
@@ -173,7 +269,7 @@ class RAGPipeline:
             return "specific"
 
     async def _generate_hyde_query(self, query: str) -> str:
-        """Helper to generate hypothetical answer for better retrieval."""
+        """Generate hypothetical answer for better retrieval."""
         try:
             prompt = ChatPromptTemplate.from_messages([
                 ("system", "Generate a hypothetical answer."), ("user", "{query}")
@@ -182,138 +278,170 @@ class RAGPipeline:
         except:
             return query
 
-    async def _retrieve(self, query: str, user_id: str, file_id: str | None, top_k: int = 6):
+    async def _retrieve(self, query: str, user_id: str, file_id: str | None, top_k: int = 8):
+        """
+        Hybrid retrieval pipeline:
+        1. Vector similarity search (semantic understanding)
+        2. BM25 keyword search (exact-match for acronyms)
+        3. Merge and deduplicate results
+        4. Cross-encoder re-ranking (precision filtering)
+        """
         start_time = time.time()
         search_query = query
         
-        # 1. Strategy Hook: HyDE
+        # HyDE for general strategies
         if not file_id and self.strategy.use_hyde:
             intent = await self._route_query(query)
-            logger.info(f"🔀 [Router] Query classified as: '{intent}'")
             if "general" in intent:
                 search_query = await self._generate_hyde_query(query)
-                logger.info(f"👻 [HyDE Active] Generated Hypothetical Answer: '{search_query}'")
-            else:
-                logger.info("⏩ [HyDE] Skipped (Query is specific)")
+                logger.info(f" [HyDE] Generated hypothetical answer for retrieval")
         
         col_name = self.strategy.get_collection_name()
-        q_emb = embed_texts([search_query])[0]
+        
+        # Embed query with instruction prefix for BGE
+        q_emb = embed_texts([search_query], is_query=True)[0]
         
         where = {"user_id": user_id}
         if file_id:
             where = {"$and": [{"user_id": user_id}, {"file_id": file_id}]}
         
-        # --- DEFINITE FIX: AGGRESSIVE FETCHING ---
-        # If specific file: Fetch 1000 (Effectively All) to ensure we can find any neighbor.
-        # If global search: Fetch 50 (High Recall) so we have enough candidates to expand windows.
+        # --- STAGE 1: VECTOR SEARCH ---
         fetch_limit = 1000 if file_id else 50
         
-        logger.info(f"🕵️ [RAG Search] Query: '{search_query[:50]}...'")
-        logger.info(f"🎯 [Target] '{col_name}' | Filter: {where} | Limit: {fetch_limit}")
-
-        # Execute Query
-        res = db_client.query(
+        logger.info(f" [Vector Search] Collection: '{col_name}' | Limit: {fetch_limit}")
+        
+        vec_res = db_client.query(
             collection_name=col_name,
             query_vector=q_emb,
             top_k=fetch_limit,
             where=where
         )
         
-        # ... (Hit counting logs) ...
-        hit_count = len(res["documents"][0]) if res["documents"] else 0
-        logger.info(f"🔢 [Results] Found {hit_count} raw matches.")
-
-        # 2. Analyze & Sort Results
-        raw_items = []
+        # --- STAGE 2: BM25 KEYWORD SEARCH (for exact-match acronyms) ---
+        bm25_results = {}
+        try:
+            bm25_res = db_client.keyword_search(
+                collection_name=col_name,
+                query_text=query,
+                top_k=20,
+                where=where
+            )
+            # Index by document text for dedup
+            if bm25_res["documents"] and bm25_res["documents"][0]:
+                for i in range(len(bm25_res["documents"][0])):
+                    doc_text = bm25_res["documents"][0][i]
+                    if doc_text not in bm25_results:
+                        bm25_results[doc_text] = {
+                            "id": bm25_res["ids"][0][i],
+                            "text": doc_text,
+                            "metadata": bm25_res["metadatas"][0][i],
+                            "bm25_score": bm25_res["scores"][0][i]
+                        }
+                logger.info(f" [BM25 Search] Found {len(bm25_results)} keyword matches")
+        except Exception as e:
+            logger.warning(f"BM25 search failed (non-critical): {e}")
+        
+        # --- STAGE 3: MERGE & DEDUPLICATE ---
+        merged_items = {}
         is_structured_doc = False
         
-        if res["documents"] and res["documents"][0]:
-            for i in range(len(res["documents"][0])):
-                text_content = res["documents"][0][i]
-                meta = res["metadatas"][0][i]
+        if vec_res["documents"] and vec_res["documents"][0]:
+            for i in range(len(vec_res["documents"][0])):
+                text_content = vec_res["documents"][0][i]
+                meta = vec_res["metadatas"][0][i]
                 
-                # --- EXCEL DETECTION ---
+                # Excel detection
                 if file_id and ("Spreadsheet Summary" in text_content or text_content.strip().startswith("Row ")):
                     is_structured_doc = True
                 
-                # Calculate Score
-                dist = res["distances"][0][i]
-                score = max(0, 1.0 - (dist / 2)) 
+                dist = vec_res["distances"][0][i]
+                score = max(0, 1.0 - (dist / 2))
                 
-                raw_items.append({
-                    "id": res["ids"][0][i],
-                    "text": text_content,
-                    "metadata": meta,
-                    "score": round(score, 4)
-                })
-
-        # 3. "GOD MODE" Logic for Excel
+                if text_content not in merged_items:
+                    merged_items[text_content] = {
+                        "id": vec_res["ids"][0][i],
+                        "text": text_content,
+                        "metadata": meta,
+                        "score": round(score, 4),
+                        "source": "vector"
+                    }
+        
+        # Merge BM25 results (add if not already present from vector search)
+        for doc_text, bm25_item in bm25_results.items():
+            if doc_text not in merged_items:
+                merged_items[doc_text] = {
+                    "id": bm25_item["id"],
+                    "text": doc_text,
+                    "metadata": bm25_item["metadata"],
+                    "score": 0.5,  # Default score for BM25-only results
+                    "source": "bm25"
+                }
+        
+        raw_items = list(merged_items.values())
+        hit_count = len(raw_items)
+        logger.info(f" [Merged Results] {hit_count} unique chunks (vector + BM25)")
+        
+        # --- EXCEL "GOD MODE" ---
         if is_structured_doc:
-            logger.info(f"📊 [Excel Mode] Detected structured data. Returning FULL CONTEXT ({len(raw_items)} chunks) sorted by row.")
+            logger.info(f" [Excel Mode] Returning full context ({len(raw_items)} chunks)")
             raw_items.sort(key=lambda x: x["metadata"].get("chunk_num", 0))
-            # Return EVERYTHING with max score for Excel
-            results = []
-            scores = []
             for item in raw_items:
                 item["score"] = 1.0
-                results.append(item)
-                scores.append(1.0)
-            return results, time.time() - start_time, scores
+            scores = [1.0] * len(raw_items)
+            return raw_items, time.time() - start_time, scores
 
-        # 4. "WINDOW RETRIEVAL" Strategy (For PDFs/Docs)
-        # Sort by vector similarity to find the best "Anchors"
+        # --- STAGE 4: WINDOW EXPANSION + RE-RANKING ---
+        # Sort by vector similarity to find anchors
         raw_items.sort(key=lambda x: x["score"], reverse=True)
-        top_anchors = raw_items[:top_k] # Get top 'top_k' best matches
+        top_anchors = raw_items[:top_k * 2]  # Get more candidates for re-ranking
         
-        # Collect Neighbors (Window Size: +/- 2 chunks)
-        # This turns a single chunk into a 5-chunk "Page View"
+        # Window expansion (±2 chunks)
         relevant_indices = set()
-        
         for item in top_anchors:
             c_num = item["metadata"].get("chunk_num", -1)
             file_ref = item["metadata"].get("file_id", "unknown")
-            
             if c_num != -1:
-                # Add the anchor and 2 neighbors on each side
-                for offset in range(-2, 3): # -2, -1, 0, 1, 2
-                    # Create a unique key (file_id + chunk_num) to handle multi-file search
+                for offset in range(-2, 3):
                     relevant_indices.add(f"{file_ref}_{c_num + offset}")
 
-        # Filter the massive 'raw_items' list to keep only the expanded set
-        final_selection = []
+        # Filter to expanded set
+        expanded_selection = []
         seen_keys = set()
-        
         for item in raw_items:
             c_num = item["metadata"].get("chunk_num", -1)
             file_ref = item["metadata"].get("file_id", "unknown")
             unique_key = f"{file_ref}_{c_num}"
-            
-            if unique_key in relevant_indices:
-                if unique_key not in seen_keys:
-                    final_selection.append(item)
-                    seen_keys.add(unique_key)
+            if unique_key in relevant_indices and unique_key not in seen_keys:
+                expanded_selection.append(item)
+                seen_keys.add(unique_key)
 
-        # D. CRITICAL: Sort by chunk_num so the LLM reads in order
-        # This restores the document flow (e.g., Page 13 -> Page 14)
-        final_selection.sort(key=lambda x: x["metadata"].get("chunk_num", 0))
+        # --- STAGE 5: CROSS-ENCODER RE-RANKING ---
+        if expanded_selection:
+            logger.info(f" [Re-ranking] {len(expanded_selection)} candidates...")
+            reranked = rerank_documents(
+                query=query,
+                documents=expanded_selection,
+                top_k=top_k,
+                relevance_threshold=0.05  # Permissive for telecom (technical content)
+            )
+            
+            if reranked:
+                # Sort by chunk_num for document flow
+                reranked.sort(key=lambda x: x["metadata"].get("chunk_num", 0))
+                results = reranked
+                scores = [x.get("rerank_score", x["score"]) for x in reranked]
+                return results, time.time() - start_time, scores
         
-        results = final_selection
-        scores = [x["score"] for x in final_selection]
+        # Fallback: use pre-rerank ordering
+        expanded_selection.sort(key=lambda x: x["metadata"].get("chunk_num", 0))
+        results = expanded_selection[:top_k]
+        scores = [x["score"] for x in results]
         
         return results, time.time() - start_time, scores
 
     def _normalize_citations(self, text: str) -> str:
-        """
-        Robustly standardizes citations.
-        Converts: (Source 1), [Source 1], (1), [1] -> [Source 1]
-        Ignores years like (2025) by restricting digits to 1-3.
-        """
+        """Standardize citation formats to [Source X]."""
         return re.sub(
-            # The Match:
-            # 1. [\(\[]       -> Starts with '(' or '['
-            # 2. (?:...)?     -> Optional "Doc" or "Source" prefix
-            # 3. (\d{1,3})    -> Capture 1 to 3 digits ONLY. (Stops matching 2025)
-            # 4. [\)\]]       -> Ends with ')' or ']'
             r"[\(\[](?:Doc\s?|Source\s?)?(\d{1,3})[\)\]]",
             lambda m: f"[Source {m.group(1)}]",
             text,
@@ -323,51 +451,72 @@ class RAGPipeline:
     async def run(self, query: str, user_id: str, file_id: str | None, chat_history: str):
         total_start = time.time()
         
-        # 1. Retrieve
+        # 1. Retrieve (Hybrid + Re-rank)
         retrieved, ret_time, scores = await self._retrieve(query, user_id, file_id)
         
         if not retrieved:
             return self._empty_response(query, ret_time, total_start)
 
-        # 2. Context Building
+        # 2. Context Building with section metadata
         formatted_docs = []
         for i, d in enumerate(retrieved):
             clean_text = d["text"].replace("\n", " ")
-            formatted_docs.append(f"[Source {i+1}] {clean_text}")
+            meta = d.get("metadata", {})
+            
+            # Add section reference if available
+            section_ref = ""
+            if meta.get("spec_number") and meta.get("section_id"):
+                section_ref = f" ({meta['spec_number']}, Section {meta['section_id']})"
+            elif meta.get("filename"):
+                section_ref = f" ({meta['filename']})"
+            
+            formatted_docs.append(f"[Source {i+1}]{section_ref} {clean_text}")
+        
         context_str = "\n\n".join(formatted_docs)
         source_list = ", ".join([f"[Source {i+1}]" for i in range(len(retrieved))])
 
-        # 3. Prompting (Strategy Hook) - FIX APPLIED HERE
+        # 3. Prompting — Chain-of-Thought with Anti-Hallucination Protocol
         role = self.strategy.get_system_role()
         
-        # DEFINE TEMPLATE WITH PLACEHOLDERS (Safe for {} content)
-        # Using {context} placeholder instead of f-string injection
+        # Inject glossary for telecom strategy
+        glossary_section = ""
+        if self.strategy.inject_glossary:
+            glossary_section = f"\n{self.strategy.get_glossary()}\n"
+
         template = """{role}
-INSTRUCTIONS:
-1. Answer using ONLY the context.
-2. Cite every claim as [Source X].
-3. If unsure, say "I cannot find the answer."
+{glossary}
+STRICT RULES:
+1. Answer using ONLY the information from the CONTEXT below. Do NOT use any outside knowledge.
+2. Cite every factual claim using [Source X] tags corresponding to the source that supports it.
+3. If the context does not contain enough information to answer the question, you MUST respond with:
+   "I cannot find sufficient information in the provided documents to answer this question."
+4. Do NOT speculate, infer, or generate information that is not explicitly stated in the context.
+5. When referencing 3GPP specifications, include the spec number and section/clause when available.
+
+REASONING PROCESS:
+Before answering, briefly identify which sources are relevant and what they say about the question.
+Then provide your answer based solely on those sources.
 
 AVAILABLE SOURCES:
 {source_list}
 
-HISTORY:
+CONVERSATION HISTORY:
 {chat_history}
 
 CONTEXT:
 {context}
 
 QUESTION: {question}
-ANSWER:"""
+
+STEP-BY-STEP REASONING AND ANSWER:"""
 
         prompt = PromptTemplate.from_template(template)
 
-        # 4. Generation (Pass variables securely)
+        # 4. Generation
         gen_start = time.time()
-        # Pass the context_str (with Excel braces) as a variable. 
-        # LangChain handles it safely here.
         ai_msg = await (prompt | self.llm).ainvoke({
             "role": role,
+            "glossary": glossary_section,
             "source_list": source_list,
             "chat_history": chat_history,
             "context": context_str, 
@@ -383,14 +532,25 @@ ANSWER:"""
             "total": raw_usage.get("total_tokens", 0)
         }
 
-        # 6. Post-Processing (Normalization + Strategy Hook)
+        # 6. Post-Processing
         raw_answer = self._normalize_citations(ai_msg.content)
         final_answer = self.strategy.post_process_answer(raw_answer)
 
-        # 7. Validation & Metrics
+        # 7. Hallucination Guard — Claim-Level Verification
+        source_texts = [d["text"] for d in retrieved]
+        faithfulness_result = run_hallucination_check(final_answer, source_texts)
+
+        # 8. Citation Validation
         val_docs = [{"id": f"Source {i+1}", "text": d["text"]} for i, d in enumerate(retrieved)]
         citation_metrics = validate_citations(final_answer, val_docs)
-        conf = calculate_confidence(query, retrieved, final_answer, citation_metrics)
+        
+        # 9. Confidence Scoring (Faithfulness-Aware)
+        rerank_scores = [d.get("rerank_score") for d in retrieved if d.get("rerank_score") is not None]
+        conf = calculate_confidence(
+            query, retrieved, final_answer, citation_metrics,
+            faithfulness=faithfulness_result,
+            rerank_scores=rerank_scores if rerank_scores else None
+        )
         
         metrics = {
             "processing_time_total": round(time.time() - total_start, 3),
@@ -400,9 +560,17 @@ ANSWER:"""
             "similarity_score": round(sum(scores)/len(scores), 3) if scores else 0,
             "confidence_category": conf["confidence_category"],
             "confidence_score": conf["confidence_score"],
+            "hallucination_risk": conf["hallucination_risk"],
             "factors": conf["factors"],
-            "hallucination_risk": "Low" if citation_metrics.get("coverage", 0) > 0.6 else "Potential",
-            "citation_validation": citation_metrics
+            "citation_validation": citation_metrics,
+            "faithfulness": {
+                "score": faithfulness_result.get("faithfulness_score", 0),
+                "verdict": faithfulness_result.get("verdict", "UNKNOWN"),
+                "supported": faithfulness_result.get("supported_count", 0),
+                "unsupported": faithfulness_result.get("unsupported_count", 0),
+                "total_claims": faithfulness_result.get("total_claims", 0),
+            },
+            "model_used": ai_msg.response_metadata.get("model_used", "unknown"),
         }
         
         return {
@@ -413,7 +581,7 @@ ANSWER:"""
 
     def _empty_response(self, query, ret_time, start_time):
         return {
-            "answer": "I could not find relevant documents.",
+            "answer": "I could not find relevant documents to answer your question. Please upload relevant 3GPP specification documents first.",
             "retrieved": [],
             "metrics": {
                 "processing_time_total": round(time.time() - start_time, 3),
@@ -423,14 +591,17 @@ ANSWER:"""
                 "similarity_score": 0.0,
                 "confidence_category": "Low",
                 "confidence_score": 0.0,
-                "hallucination_risk": "High",
+                "hallucination_risk": "N/A",
                 "citation_validation": {},
                 "factors": {},
-                "evaluation": {}
+                "faithfulness": {"score": 0, "verdict": "NO_CONTEXT", "supported": 0, "unsupported": 0, "total_claims": 0},
+                "model_used": "none",
             }
         }
 
-# --- 5. CLIENT CODE: Main Entry Point ---
+# ═══════════════════════════════════════════════════════════════
+# 4. CLIENT CODE — Entry Points
+# ═══════════════════════════════════════════════════════════════
 
 async def answer_query(query: str, user_id: str, file_id: str | None = None, mode: str = "general", chat_history: str = ""):
     
@@ -441,34 +612,27 @@ async def answer_query(query: str, user_id: str, file_id: str | None = None, mod
         db.close()
         
         if doc and doc.file_path.endswith(('.xlsx', '.xls')):
-            # EXPANDED TRIGGERS: Almost any question about data should go to Pandas
-            # We add "list", "show", "what", "who", "which", "give", "policy"
-            # Basically, if it's Excel, use Code Interpreter unless it's purely "Summarize".
-            
             triggers = [
                 "total", "sum", "average", "count", "how many", "calculate", "max", "min", "mean",
                 "list", "show", "give", "who", "what", "which", "where", "policy", "detail"
             ]
             
-            # Check triggers OR if query is short/specific enough to likely be a data lookup
             if any(t in query.lower() for t in triggers):
-                logger.info(f"📊 Detected Excel Query on {doc.filename}. Routing to Pandas Engine.")
+                logger.info(f" Detected Excel Query on {doc.filename}. Routing to Pandas Engine.")
                 
                 analysis_result = await analyze_excel(doc.file_path, query)
 
-                # Safe Unpacking (in case of legacy/error returns)
                 if isinstance(analysis_result, dict):
                     final_answer = analysis_result["answer"]
                     conf_score = analysis_result["confidence"]
                     reason = analysis_result["reason"]
                 else:
-                    # Fallback
                     final_answer = str(analysis_result)
                     conf_score = 100.0
                     reason = "Legacy Mode"
                 
                 return {
-                    "answer": f"**Analysis Result:**\n\n{final_answer}", # <--- FIX: Use final_answer
+                    "answer": f"**Analysis Result:**\n\n{final_answer}",
                     "retrieved": [],
                     "metrics": {
                         "confidence_score": conf_score,
@@ -480,20 +644,17 @@ async def answer_query(query: str, user_id: str, file_id: str | None = None, mod
                             "logic_check": reason
                         },
                         "processing_time_total": 0.5,
+                        "faithfulness": {"score": conf_score, "verdict": "CODE_VERIFIED", "supported": 0, "unsupported": 0, "total_claims": 0},
                     }
                 }
+    
     # --- STANDARD RAG FLOW ---
-    # 1. Get the correct Strategy based on the mode (role)
     strategy = StrategyFactory.get_strategy(mode)
-    
-    # 2. Initialize the Pipeline with that strategy
     pipeline = RAGPipeline(strategy)
-    
-    # 3. Execute
     return await pipeline.run(query, user_id, file_id, chat_history)
 
-# Compat wrapper for other services
-async def retrieve_docs(query, user_id, file_id=None, mode="general", top_k=6):
+# Compat wrapper
+async def retrieve_docs(query, user_id, file_id=None, mode="general", top_k=8):
     strategy = StrategyFactory.get_strategy(mode)
     pipeline = RAGPipeline(strategy)
     d, _, _ = await pipeline._retrieve(query, user_id, file_id, top_k)

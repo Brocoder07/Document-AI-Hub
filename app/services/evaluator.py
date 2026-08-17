@@ -16,17 +16,17 @@ class RAGEvaluator:
     
     def __init__(self):
         self.performance_thresholds = {
-            "min_similarity": 0.35,
-            "min_grounding": 0.4,
-            "max_retrieval_time": 4.0,
+            "min_similarity": 0.40,
+            "min_grounding": 0.45,
+            "max_retrieval_time": 5.0,
         }
         
         try:
             # Reuse the model defined in your settings
             self.grounding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
-            logger.info(f"✅ Evaluator loaded model: {settings.EMBEDDING_MODEL}")
+            logger.info(f" Evaluator loaded model: {settings.EMBEDDING_MODEL}")
         except Exception as e:
-            logger.error(f"❌ Failed to load grounding model: {e}")
+            logger.error(f" Failed to load grounding model: {e}")
             self.grounding_model = None
 
     def _calculate_grounding_confidence(self, answer: str, context: str) -> float:

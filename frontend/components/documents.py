@@ -3,11 +3,11 @@ from api_client import APIClient
 import time
 
 def render_documents_page(api: APIClient):
-    st.title("📂 Document Library")
+    st.title(" Document Library")
     token = st.session_state.access_token
 
     # 1. Upload Section
-    with st.expander("⬆️ Upload New File", expanded=True):
+    with st.expander("⬆ Upload New File", expanded=True):
         f = st.file_uploader(
             "Choose file", 
             type=[
@@ -46,11 +46,11 @@ def render_documents_page(api: APIClient):
             status = file.get("processing_status", "completed") 
             
             if status == "processing":
-                c2.info("⏳ Processing")
+                c2.info(" Processing")
             elif status == "failed":
-                c2.error("❌ Failed")
+                c2.error(" Failed")
             else:
-                c2.success("✅ Ready")
+                c2.success(" Ready")
 
             # Column 3: Date
             c3.caption(file['upload_date'])
@@ -60,7 +60,7 @@ def render_documents_page(api: APIClient):
                 col_a, col_b = st.columns(2)
                 
                 # Delete Button (Always available)
-                if col_a.button("🗑️", key=f"del_{file['file_id']}"):
+                if col_a.button("", key=f"del_{file['file_id']}"):
                     if api.delete_file(file['file_id'], token):
                         st.toast("File deleted")
                         time.sleep(0.5)
@@ -75,15 +75,15 @@ def render_documents_page(api: APIClient):
                     ftype = file['file_type'].lower()
                     
                     if ftype in ['mp3', 'wav', 'mp4', 'm4a']:
-                        if col_b.button("🎙️ Transcribe", key=f"trans_{file['file_id']}"):
+                        if col_b.button(" Transcribe", key=f"trans_{file['file_id']}"):
                             handle_processing(api, token, file['file_id'], "transcription")
                     
                     elif ftype in ['png', 'jpg', 'jpeg', 'pdf']:
-                        if col_b.button("🔍 OCR", key=f"ocr_{file['file_id']}"):
+                        if col_b.button(" OCR", key=f"ocr_{file['file_id']}"):
                             handle_processing(api, token, file['file_id'], "ocr")
 
                     elif ftype in ['txt', 'md', 'doc', 'docx']:
-                        if col_b.button("📝 Extract", key=f"ext_{file['file_id']}"):
+                        if col_b.button(" Extract", key=f"ext_{file['file_id']}"):
                             handle_processing(api, token, file['file_id'], "extraction")
                 
                 # If processing, show spinner and auto-refresh
@@ -118,7 +118,7 @@ def handle_processing(api, token, file_id, mode):
         st.session_state.nav_section = "Chat"
         
         # 2. Inject Result into Chat History
-        success_msg = f"✅ **{mode.upper()} Complete!** Here is the content:\n\n{text_result}"
+        success_msg = f" **{mode.upper()} Complete!** Here is the content:\n\n{text_result}"
         
         # Create session if needed (Frontend only for instant UI)
         if not st.session_state.chat_history:

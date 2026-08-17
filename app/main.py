@@ -19,9 +19,9 @@ from app.api.format import router as format_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 SYSTEM STARTUP")
+    print(" SYSTEM STARTUP")
     yield
-    print("🛑 SYSTEM SHUTDOWN")
+    print(" SYSTEM SHUTDOWN")
     db_client.close()
 
 app = FastAPI(

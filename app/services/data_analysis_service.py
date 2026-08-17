@@ -56,7 +56,7 @@ async def analyze_excel(file_path: str, query: str) -> dict:
         })
         
         code = response.content.strip().replace("`", "").replace("python", "").strip()
-        logger.info(f"🐍 Generated Pandas Query: {code}")
+        logger.info(f" Generated Pandas Query: {code}")
 
         # --- NEW STEP: THE REVIEWER ---
         review_template = """

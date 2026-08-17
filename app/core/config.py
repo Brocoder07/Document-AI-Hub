@@ -5,7 +5,7 @@ import os
 class Settings(BaseSettings):
     # Project
     PROJECT_NAME: str = "Document AI Hub"
-    VERSION: str = "1.0.0"
+    VERSION: str = "2.0.0"
     API_V1_STR: str = "/api/v1"
 
     # Database
@@ -17,12 +17,14 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     MESSAGE_ENCRYPTION_KEY: str = Field(..., validation_alias="MESSAGE_ENCRYPTION_KEY")
 
-    # AI Models
-    EMBEDDING_MODEL: str = "sentence-transformers/all-mpnet-base-v2"
+    # AI Models — BGE-large-en-v1.5: 1024-dim, #1 MTEB retrieval benchmark
+    EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
+    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
     
     # Groq Configuration
     GROQ_API_KEY: str = Field(..., validation_alias="GROQ_API_KEY")
-    GROQ_MODEL: str = Field(default="llama-3.1-8b-instant", validation_alias="GROQ_MODEL")
+    GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile", validation_alias="GROQ_MODEL")
+    GROQ_MODEL_FALLBACK: str = Field(default="llama-3.1-8b-instant", validation_alias="GROQ_MODEL_FALLBACK")
 
     UPLOAD_DIR: str = "data/documents"
     OCR_TEMP_DIR: str = "data/ocr_temp"

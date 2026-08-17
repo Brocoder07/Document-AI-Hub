@@ -77,7 +77,7 @@ def render_sidebar(api, token, user_data):
             </div>
             """, unsafe_allow_html=True)
             
-            if st.button("🚪 Log out", use_container_width=True):
+            if st.button(" Log out", use_container_width=True):
                 delete_token_cookie()
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]

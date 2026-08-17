@@ -76,16 +76,26 @@ def map_role_to_mode(role: str) -> str:
     role = role.lower().strip() if role else "employee"
     
     mapping = {
+        # Telecom (PRIMARY)
+        "engineer": "telecom",
+        "telecom": "telecom",
+        "telecom engineer": "telecom",
+        "network engineer": "telecom",
+        # Finance
         "banker": "finance",
         "financial analyst": "finance",
+        # Legal
         "lawyer": "legal",
-        "doctor": "healthcare",   # NEW: Added Healthcare
+        # Healthcare
+        "doctor": "healthcare",
+        # Academic
         "student": "academic",
         "researcher": "academic",
+        # Business
         "business man": "business",
         "employee": "business"
     }
-    return mapping.get(role, "business")
+    return mapping.get(role, "general")
 
 # --- 3. Endpoints ---
 

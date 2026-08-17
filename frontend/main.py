@@ -18,7 +18,7 @@ from utils.session_manager import get_token_from_cookie, set_token_cookie, init_
 # Page Config
 st.set_page_config(
     page_title="Document AI Hub", 
-    page_icon="🤖", 
+    page_icon="", 
     layout="wide",
     initial_sidebar_state="expanded"
 )

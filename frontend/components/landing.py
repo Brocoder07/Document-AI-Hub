@@ -17,16 +17,16 @@ def render_landing_page(go_login, go_register):
     with col2:
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🚀 Get Started", use_container_width=True, type="primary"):
+            if st.button(" Get Started", use_container_width=True, type="primary"):
                 go_register()
         with c2:
-            if st.button("🔐 Login", use_container_width=True):
+            if st.button(" Login", use_container_width=True):
                 go_login()
     
     st.divider()
     
     # Feature Grid
     c1, c2, c3 = st.columns(3)
-    c1.info("📄 **Upload Anything**\n\nPDFs, Images, Audio supported.")
-    c2.info("🧠 **Smart Context**\n\nRAG pipeline retrieves exact evidence.")
-    c3.info("🛡️ **Secure**\n\nRBAC and JWT authentication built-in.")
+    c1.info(" **Upload Anything**\n\nPDFs, Images, Audio supported.")
+    c2.info(" **Smart Context**\n\nRAG pipeline retrieves exact evidence.")
+    c3.info(" **Secure**\n\nRBAC and JWT authentication built-in.")

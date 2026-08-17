@@ -1,9 +1,9 @@
 import streamlit as st
 
 def render_utilities(api):
-    st.header("🛠️ Utilities")
+    st.header(" Utilities")
     
-    tab1, tab2, tab3 = st.tabs(["🔍 Similarity Search", "📝 Summarization", "🔤 Embeddings"])
+    tab1, tab2, tab3 = st.tabs([" Similarity Search", " Summarization", " Embeddings"])
     
     # --- TAB 1: SEARCH ---
     with tab1:
@@ -30,7 +30,7 @@ def render_utilities(api):
                             filename = meta.get('filename', 'Unknown')
                             doc_id = r.get('id', '') if isinstance(r, dict) else getattr(r, 'id', '')
 
-                            with st.expander(f"📄 {filename} (Score: {score:.4f})"):
+                            with st.expander(f" {filename} (Score: {score:.4f})"):
                                 st.markdown("**Content snippet:**")
                                 st.text(text[:500] + "..." if len(text) > 500 else text)
                                 st.caption(f"ID: {doc_id}")

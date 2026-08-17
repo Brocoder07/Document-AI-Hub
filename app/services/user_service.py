@@ -31,6 +31,9 @@ def create_user(db: Session, user_data: dict) -> User:
     # Accepts exact string matches from frontend, case-insensitive
     requested_role_lower = requested_role.lower()
     valid_roles = [
+        "engineer",
+        "telecom engineer",
+        "network engineer",
         "student", 
         "researcher", 
         "lawyer", 

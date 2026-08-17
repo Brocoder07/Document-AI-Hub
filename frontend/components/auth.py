@@ -10,7 +10,7 @@ def render_login(api):
             st.session_state.current_view = "landing"
             st.rerun()
 
-        st.markdown("## 🔐 Login")
+        st.markdown("##  Login")
         with st.form("login_form"):
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
@@ -45,14 +45,17 @@ def render_register(api):
             st.session_state.current_view = "landing"
             st.rerun()
             
-        st.markdown("## 📝 New Account")
+        st.markdown("##  New Account")
         with st.form("reg_form"):
             username = st.text_input("Username")
             email = st.text_input("Email")
             name = st.text_input("Full Name")
             
-            # UPDATED: Specific Role Selection
+            # UPDATED: Role Selection — Telecom roles first (primary focus)
             role = st.selectbox("I am a...", [
+                "Engineer",
+                "Telecom Engineer",
+                "Network Engineer",
                 "Student", 
                 "Researcher", 
                 "Doctor", 

@@ -2,7 +2,7 @@ import streamlit as st
 from session_state import SessionState
 
 def render_settings_page(api):
-    st.title("⚙️ User Settings")
+    st.title(" User Settings")
     token = st.session_state.access_token
 
     # Fetch User Info
@@ -30,7 +30,7 @@ def render_settings_page(api):
     st.divider()
     
     st.subheader("Danger Zone")
-    if st.button("❌ Delete Account", type="primary"):
+    if st.button(" Delete Account", type="primary"):
         st.warning("Are you sure? This action cannot be undone.")
         if st.button("Yes, permanently delete my account"):
             if api.delete_user(token):
