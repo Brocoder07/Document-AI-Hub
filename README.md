@@ -136,8 +136,8 @@ Create a `.env` file in the root directory. Configure paths according to your sy
 DATABASE_URL=postgresql://ai_user:password@localhost/document_ai_hub
 
 # Security (Generate random hashes for these in production)
-SECRET_KEY=c1ab444558242000b37d1c3a5b59e7c22355fe0f9afd72d3307ed0f11331e377
-MESSAGE_ENCRYPTION_KEY="2weyw8r9uIYP5bvit6iLW_hiFp7-iXojKnIegxDc-fk="
+SECRET_KEY=<your-secure-jwt-secret>
+MESSAGE_ENCRYPTION_KEY=<your-fernet-encryption-key>
 
 # Groq API Settings
 GROQ_API_KEY=your_groq_api_key_here
